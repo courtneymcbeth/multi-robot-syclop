@@ -1,0 +1,3 @@
+[submodule "Multi-Robot-OMPL"]
+	path = Multi-Robot-OMPL
+	url = git@github.com:courtneymcbeth/Multi-Robot-OMPL.git
