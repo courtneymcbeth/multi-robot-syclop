@@ -1,0 +1,15 @@
+# Simple 2-robot scenario in a 10x10 environment
+# Robots need to swap positions
+
+environment:
+  min: [0.0, 0.0]
+  max: [10.0, 10.0]
+
+robots:
+  - name: robot0
+    start: [2.0, 2.0, 0.0]  # [x, y, theta]
+    goal: [8.0, 8.0, 0.0]
+
+  - name: robot1
+    start: [8.0, 8.0, 0.0]
+    goal: [2.0, 2.0, 0.0]

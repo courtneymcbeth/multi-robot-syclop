@@ -1,0 +1,19 @@
+# 3-robot scenario where robots must coordinate in tight spaces
+# This scenario requires coupling/decoupling as robots meet
+
+environment:
+  min: [0.0, 0.0]
+  max: [15.0, 10.0]
+
+robots:
+  - name: robot0
+    start: [1.0, 5.0, 0.0]  # [x, y, theta]
+    goal: [14.0, 5.0, 0.0]
+
+  - name: robot1
+    start: [7.0, 2.0, 1.57]
+    goal: [7.0, 8.0, 1.57]
+
+  - name: robot2
+    start: [14.0, 5.0, 3.14]
+    goal: [1.0, 5.0, 3.14]
