@@ -45,10 +45,66 @@ def plot_solution(env_file, solution_file, output_image=None):
     ax.set_xlim(env_min[0], env_max[0])
     ax.set_ylim(env_min[1], env_max[1])
     ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_title('Multi-Robot SyCLoP Solution Paths')
+
+    # Draw regions if decomposition data is available
+    if 'decomposition' in solution:
+        decomp = solution['decomposition']
+        if decomp.get('type') == 'grid':
+            grid_size = decomp['grid_size']
+            bounds_min = decomp['bounds']['min']
+            bounds_max = decomp['bounds']['max']
+
+            # Calculate cell dimensions
+            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
+            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
+
+            # Helper function to get region cell coordinates
+            def get_region_bounds(region_id):
+                """Get the (x, y, width, height) for a region given its ID"""
+                row = region_id // grid_size[0]
+                col = region_id % grid_size[0]
+                x = bounds_min[0] + col * cell_width
+                y = bounds_min[1] + row * cell_height
+                return x, y, cell_width, cell_height
+
+            # Shade lead regions for each robot (if leads available)
+            if 'leads' in decomp and decomp['leads']:
+                colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
+                for robot_idx, lead in enumerate(decomp['leads']):
+                    if lead:  # Check if lead is not empty
+                        color = colors[robot_idx]
+                        for region_id in lead:
+                            x, y, w, h = get_region_bounds(region_id)
+                            rect = patches.Rectangle((x, y), w, h,
+                                                    linewidth=0,
+                                                    facecolor=color,
+                                                    alpha=0.15,
+                                                    zorder=0)
+                            ax.add_patch(rect)
+
+            # Draw region boundary lines (thicker and more visible)
+            for i in range(grid_size[0] + 1):
+                x = bounds_min[0] + i * cell_width
+                ax.axvline(x, color='darkgray', linewidth=1.5, alpha=0.6, linestyle='-')
+
+            for j in range(grid_size[1] + 1):
+                y = bounds_min[1] + j * cell_height
+                ax.axhline(y, color='darkgray', linewidth=1.5, alpha=0.6, linestyle='-')
+
+            # Optionally label regions (only for small grids)
+            if grid_size[0] * grid_size[1] <= 25:
+                region_id = 0
+                for j in range(grid_size[1]):
+                    for i in range(grid_size[0]):
+                        x_center = bounds_min[0] + (i + 0.5) * cell_width
+                        y_center = bounds_min[1] + (j + 0.5) * cell_height
+                        ax.text(x_center, y_center, str(region_id),
+                               ha='center', va='center', fontsize=8,
+                               alpha=0.3, color='gray')
+                        region_id += 1
 
     # Colors for different robots
     colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
@@ -68,17 +124,29 @@ def plot_solution(env_file, solution_file, output_image=None):
 
         color = colors[robot_idx]
         robot_name = robot_config.get('name', f'Robot {robot_idx}')
+        robot_radius = robot_config.get('radius', 0.5)
 
         # Plot path
         ax.plot(xs, ys, '-', color=color, linewidth=2, alpha=0.7, label=f'{robot_name} path')
 
-        # Plot start position (circle)
+        # Plot robot geometry at start and goal positions
         start = robot_config['start']
+        goal = robot_config['goal']
+
+        # Draw circles showing robot size at start and goal
+        start_circle = patches.Circle((start[0], start[1]), robot_radius,
+                                     color=color, alpha=0.2, edgecolor='black', linewidth=2)
+        goal_circle = patches.Circle((goal[0], goal[1]), robot_radius,
+                                    color=color, alpha=0.2, edgecolor='black',
+                                    linewidth=2, linestyle='--')
+        ax.add_patch(start_circle)
+        ax.add_patch(goal_circle)
+
+        # Plot start position (circle marker)
         ax.plot(start[0], start[1], 'o', color=color, markersize=12,
                 markeredgecolor='black', markeredgewidth=2, label=f'{robot_name} start')
 
         # Plot goal position (star)
-        goal = robot_config['goal']
         ax.plot(goal[0], goal[1], '*', color=color, markersize=15,
                 markeredgecolor='black', markeredgewidth=1.5, label=f'{robot_name} goal')
 
@@ -133,9 +201,53 @@ def animate_solution(env_file, solution_file, output_video=None):
     ax.set_xlim(env_min[0], env_max[0])
     ax.set_ylim(env_min[1], env_max[1])
     ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
+
+    # Draw regions if decomposition data is available
+    if 'decomposition' in solution:
+        decomp = solution['decomposition']
+        if decomp.get('type') == 'grid':
+            grid_size = decomp['grid_size']
+            bounds_min = decomp['bounds']['min']
+            bounds_max = decomp['bounds']['max']
+
+            # Calculate cell dimensions
+            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
+            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
+
+            # Helper function to get region cell coordinates
+            def get_region_bounds(region_id):
+                """Get the (x, y, width, height) for a region given its ID"""
+                row = region_id // grid_size[0]
+                col = region_id % grid_size[0]
+                x = bounds_min[0] + col * cell_width
+                y = bounds_min[1] + row * cell_height
+                return x, y, cell_width, cell_height
+
+            # Shade lead regions for each robot (if leads available)
+            if 'leads' in decomp and decomp['leads']:
+                colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
+                for robot_idx, lead in enumerate(decomp['leads']):
+                    if lead:  # Check if lead is not empty
+                        color = colors[robot_idx]
+                        for region_id in lead:
+                            x, y, w, h = get_region_bounds(region_id)
+                            rect = patches.Rectangle((x, y), w, h,
+                                                    linewidth=0,
+                                                    facecolor=color,
+                                                    alpha=0.15,
+                                                    zorder=0)
+                            ax.add_patch(rect)
+
+            # Draw region boundary lines (thicker and more visible)
+            for i in range(grid_size[0] + 1):
+                x = bounds_min[0] + i * cell_width
+                ax.axvline(x, color='darkgray', linewidth=1.5, alpha=0.6, linestyle='-')
+
+            for j in range(grid_size[1] + 1):
+                y = bounds_min[1] + j * cell_height
+                ax.axhline(y, color='darkgray', linewidth=1.5, alpha=0.6, linestyle='-')
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
 
@@ -155,9 +267,11 @@ def animate_solution(env_file, solution_file, output_video=None):
     for robot_idx in range(len(paths)):
         color = colors[robot_idx]
         robot_name = env['robots'][robot_idx].get('name', f'Robot {robot_idx}')
+        robot_radius = env['robots'][robot_idx].get('radius', 0.5)
 
-        # Robot circle
-        robot_circle = plt.Circle((0, 0), 0.3, color=color, zorder=5,
+        # Robot circle with actual size
+        robot_circle = plt.Circle((0, 0), robot_radius, color=color, zorder=5,
+                                 alpha=0.7, edgecolor='black', linewidth=2,
                                  label=robot_name)
         ax.add_patch(robot_circle)
         robot_artists.append(robot_circle)

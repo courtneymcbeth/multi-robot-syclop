@@ -7,9 +7,11 @@ environment:
 
 robots:
   - name: robot0
+    radius: 0.5  # Robot radius for collision checking
     start: [2.0, 2.0, 0.0]  # [x, y, theta]
     goal: [8.0, 8.0, 0.0]
 
   - name: robot1
+    radius: 0.5  # Robot radius for collision checking
     start: [8.0, 8.0, 0.0]
     goal: [2.0, 2.0, 0.0]

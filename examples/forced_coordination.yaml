@@ -1,0 +1,17 @@
+# Scenario that forces composite space coordination
+# Robots must cross through a narrow corridor
+
+environment:
+  min: [0.0, 0.0]
+  max: [10.0, 10.0]
+
+robots:
+  - name: robot0
+    radius: 0.5
+    start: [2.5, 5.0, 0.0]  # Left side of corridor
+    goal: [7.5, 5.0, 0.0]   # Right side of corridor (straight across)
+
+  - name: robot1
+    radius: 0.5
+    start: [7.5, 5.0, 0.0]  # Right side of corridor
+    goal: [2.5, 5.0, 0.0]   # Left side of corridor (straight across)

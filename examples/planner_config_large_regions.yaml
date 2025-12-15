@@ -1,0 +1,20 @@
+# Multi-Robot SyCLoP Configuration with LARGE Regions for Coordination
+#
+# For robots to pass each other in composite space, regions need to be
+# large enough for robots to maneuver around each other.
+#
+# Environment: 10x10
+# Robot radius: 0.5 → diameter: 1.0
+# Required region size for side-by-side: > 2.0 (2 diameters)
+# This config uses 4x4 grid → 2.5x2.5 regions (LARGE ENOUGH)
+
+goal_epsilon: 0.5
+
+# Grid resolution: 4x4 = 16 regions, each 2.5x2.5
+# This is large enough for 2 robots to pass each other
+grid_resolution: 4
+
+# Increase expansions since we have fewer regions
+num_region_expansions: 50
+num_tree_selections: 1
+prob_shortest_path: 0.95

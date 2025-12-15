@@ -61,6 +61,54 @@ public:
         // Yaw is already sampled randomly by sampleUniform
     }
 
+    int locateRegion(const ob::State *s) const override
+    {
+        // Project state to coordinates
+        std::vector<double> coord;
+        project(s, coord);
+
+        // Calculate cell dimensions
+        double cellWidth = (bounds_.high[0] - bounds_.low[0]) / gridSizes_[0];
+        double cellHeight = (bounds_.high[1] - bounds_.low[1]) / gridSizes_[1];
+
+        // Determine which cell the coordinates are in
+        int col = static_cast<int>((coord[0] - bounds_.low[0]) / cellWidth);
+        int row = static_cast<int>((coord[1] - bounds_.low[1]) / cellHeight);
+
+        // Clamp to valid range
+        col = std::min(std::max(col, 0), gridSizes_[0] - 1);
+        row = std::min(std::max(row, 0), gridSizes_[1] - 1);
+
+        // Compute region ID in row-major order
+        return row * gridSizes_[0] + col;
+    }
+
+    void getNeighbors(int rid, std::vector<int> &neighbors) const override
+    {
+        neighbors.clear();
+
+        // Convert region ID to row/col
+        int row = rid / gridSizes_[0];
+        int col = rid % gridSizes_[0];
+
+        // Add all 4-connected neighbors (up, down, left, right)
+        // Up (row + 1)
+        if (row + 1 < gridSizes_[1])
+            neighbors.push_back((row + 1) * gridSizes_[0] + col);
+
+        // Down (row - 1)
+        if (row - 1 >= 0)
+            neighbors.push_back((row - 1) * gridSizes_[0] + col);
+
+        // Right (col + 1)
+        if (col + 1 < gridSizes_[0])
+            neighbors.push_back(row * gridSizes_[0] + (col + 1));
+
+        // Left (col - 1)
+        if (col - 1 >= 0)
+            neighbors.push_back(row * gridSizes_[0] + (col - 1));
+    }
+
 private:
     std::vector<int> gridSizes_;
     int numRegions_;
@@ -72,13 +120,24 @@ ompl::base::PlannerPtr PlannerAllocator(const ompl::base::SpaceInformationPtr &s
     return std::make_shared<ompl::geometric::RRT>(si);
 }
 
-// Simple multi-robot state validity checker that checks individual validity
-// You can extend this with FCL-based inter-robot collision checking
-class SimpleMultiRobotStateValidityChecker : public ob::StateValidityChecker
+// Robot information for collision checking
+struct RobotInfo
+{
+    double radius;
+    ob::SpaceInformationPtr si;
+    unsigned int index;
+};
+
+// Multi-robot state validity checker with distance-based collision detection
+class CircularRobotStateValidityChecker : public ob::StateValidityChecker
 {
 public:
-    SimpleMultiRobotStateValidityChecker(const ob::SpaceInformationPtr &si)
+    CircularRobotStateValidityChecker(const ob::SpaceInformationPtr &si,
+                                     const std::vector<RobotInfo> &allRobots,
+                                     unsigned int robotIndex)
         : ob::StateValidityChecker(si)
+        , allRobots_(allRobots)
+        , robotIndex_(robotIndex)
     {
     }
 
@@ -88,14 +147,57 @@ public:
         return si_->satisfiesBounds(state);
     }
 
-    // Override this for inter-robot collision checking
-    bool areStatesValid(const ob::State* /*state1*/,
-                       const std::pair<const ob::SpaceInformationPtr, const ob::State*> /*state2*/) const override
+    // Inter-robot collision checking using distance between circular robots
+    bool areStatesValid(const ob::State* state1,
+                       const std::pair<const ob::SpaceInformationPtr, const ob::State*> state2) const override
     {
-        // TODO: Implement inter-robot collision checking here
-        // Return false if robots collide, true otherwise
-        return true;  // No collision checking for now
+        const auto &otherSI = state2.first;
+        const auto *otherState = state2.second;
+
+        // Find which robot the other SpaceInformation corresponds to
+        int otherRobotIdx = -1;
+        for (size_t i = 0; i < allRobots_.size(); ++i)
+        {
+            if (allRobots_[i].si.get() == otherSI.get())
+            {
+                otherRobotIdx = i;
+                break;
+            }
+        }
+
+        if (otherRobotIdx == -1)
+        {
+            // Couldn't find other robot, assume no collision
+            return true;
+        }
+
+        // Get positions of both robots (assuming SE2 state space)
+        const auto *se2_state1 = state1->as<ob::SE2StateSpace::StateType>();
+        const auto *se2_state2 = otherState->as<ob::SE2StateSpace::StateType>();
+
+        double x1 = se2_state1->getX();
+        double y1 = se2_state1->getY();
+        double x2 = se2_state2->getX();
+        double y2 = se2_state2->getY();
+
+        // Calculate distance between robot centers
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+        double distance = std::sqrt(dx * dx + dy * dy);
+
+        // Get radii of both robots
+        double r1 = allRobots_[robotIndex_].radius;
+        double r2 = allRobots_[otherRobotIdx].radius;
+
+        // Check for collision (distance < sum of radii)
+        // Add small buffer for numerical stability
+        const double buffer = 0.01;
+        return distance >= (r1 + r2 - buffer);
     }
+
+private:
+    const std::vector<RobotInfo> &allRobots_;
+    unsigned int robotIndex_;
 };
 
 int main(int argc, char* argv[])
@@ -151,8 +253,19 @@ int main(int argc, char* argv[])
     auto ma_si = std::make_shared<omrb::SpaceInformation>();
     auto ma_pdef = std::make_shared<omrb::ProblemDefinition>(ma_si);
 
-    // For each robot, create individual space and problem definition
+    // First pass: collect robot information
+    std::vector<RobotInfo> allRobots;
+    for (const auto &robot_node : env["robots"]) {
+        RobotInfo info;
+        info.radius = robot_node["radius"] ? robot_node["radius"].as<double>() : 0.5;  // Default radius
+        info.index = allRobots.size();
+        // si will be set in second pass
+        allRobots.push_back(info);
+    }
+
+    // Second pass: create spaces and checkers with full robot info
     std::vector<double> start_reals, goal_reals;
+    unsigned int robotIdx = 0;
     for (const auto &robot_node : env["robots"]) {
         // Create SE2 state space for this robot
         auto space = std::make_shared<ob::SE2StateSpace>();
@@ -166,8 +279,11 @@ int main(int argc, char* argv[])
         // Create space information
         auto si = std::make_shared<ob::SpaceInformation>(space);
 
-        // Set simple state validity checker
-        auto checker = std::make_shared<SimpleMultiRobotStateValidityChecker>(si);
+        // Store SI in robot info for collision checking
+        allRobots[robotIdx].si = si;
+
+        // Set collision checker with all robot info
+        auto checker = std::make_shared<CircularRobotStateValidityChecker>(si, allRobots, robotIdx);
         si->setStateValidityChecker(checker);
         si->setup();
 
@@ -183,7 +299,7 @@ int main(int argc, char* argv[])
         space->copyFromReals(startState, start_reals);
         si->enforceBounds(startState);
         pdef->addStartState(startState);
-        si->freeState(startState);
+        // Note: Don't free startState - pdef manages this memory
 
         // Set goal state
         goal_reals.clear();
@@ -194,11 +310,13 @@ int main(int argc, char* argv[])
         space->copyFromReals(goalState, goal_reals);
         si->enforceBounds(goalState);
         pdef->setGoalState(goalState, cfg["goal_epsilon"].as<double>());
-        si->freeState(goalState);
+        // Note: Don't free goalState - pdef manages this memory
 
         // Add to multi-robot containers
         ma_si->addIndividual(si);
         ma_pdef->addIndividual(pdef);
+
+        ++robotIdx;
     }
 
     // Lock the multi-robot SpaceInformation and ProblemDefinitions
@@ -220,7 +338,7 @@ int main(int argc, char* argv[])
         // Create grid decomposition (you can adjust grid resolution)
         int gridResolution = cfg["grid_resolution"].as<int>(32);  // Default 32x32 grid
         auto decomposition = std::make_shared<SimpleGridDecomposition>(
-            2, 2, decomp_bounds, std::vector<int>{gridResolution, gridResolution});
+            gridResolution, 2, decomp_bounds, std::vector<int>{gridResolution, gridResolution});
 
         // Create MR-SyCLoP planner
         auto planner = std::make_shared<omrg::MRSyCLoP>(ma_si);
@@ -281,6 +399,28 @@ int main(int argc, char* argv[])
                         resultFile << "]" << std::endl;
                     }
                 }
+            }
+
+            // Export decomposition/region data for visualization
+            resultFile << "decomposition:" << std::endl;
+            resultFile << "  type: grid" << std::endl;
+            resultFile << "  grid_size: [" << gridResolution << ", " << gridResolution << "]" << std::endl;
+            resultFile << "  bounds:" << std::endl;
+            resultFile << "    min: [" << decomp_bounds.low[0] << ", " << decomp_bounds.low[1] << "]" << std::endl;
+            resultFile << "    max: [" << decomp_bounds.high[0] << ", " << decomp_bounds.high[1] << "]" << std::endl;
+
+            // Export leads (region sequences) for each robot
+            const auto &leads = planner->getLeads();
+            resultFile << "  leads:" << std::endl;
+            for (unsigned int r = 0; r < leads.size(); ++r) {
+                resultFile << "    - [";
+                for (size_t i = 0; i < leads[r].size(); ++i) {
+                    resultFile << leads[r][i];
+                    if (i < leads[r].size() - 1) {
+                        resultFile << ", ";
+                    }
+                }
+                resultFile << "]" << std::endl;
             }
 
             stats << "    solved: true" << std::endl;

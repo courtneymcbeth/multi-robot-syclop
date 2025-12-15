@@ -154,12 +154,20 @@ Coordinates multiple robots in same region:
 
 2. Create composite current state from individual states
 
-3. Sample and extend in composite space
+3. Sample target composite state:
+   - Each robot component samples from ITS OWN next region (80% probability)
+   - Or from current region (20% probability for exploration)
+   - This allows coordinated progress toward individual goals
 
-4. Extract individual states from new composite state
+4. Extend in composite space toward sampled target
 
-5. Update each robot's current state
+5. Extract individual states from new composite state
+
+6. Update each robot's current state
 ```
+
+**Key Feature - Individual Progress Bias**:
+Unlike earlier implementations that sampled all robots from the same region, each robot now samples from its own next region. This allows robots to make coordinated progress toward their different goals while avoiding collisions.
 
 **Collision checking**:
 ```cpp
@@ -253,16 +261,37 @@ while (!ptc && !hasSolution()) {
 
 ## Solution Extraction
 
-Current implementation (simplified):
+The solution extraction captures waypoints at key moments during planning:
+
 ```cpp
-for each robot r:
-    path = PathGeometric(si)
-    path.append(start_state)
-    path.append(current_state)
-    pdef->addSolutionPath(path)
+void extractSolution():
+    for each robot r:
+        path = PathGeometric(si)
+
+        // Add all waypoints captured during planning
+        for waypoint in pathWaypoints_[r]:
+            path.append(waypoint)
+
+        // Add final state if different from last waypoint
+        if distance(lastWaypoint, currentState) > epsilon:
+            path.append(currentState)
+
+        pdef->addSolutionPath(path)
 ```
 
-**Future enhancement**: Reconstruct full paths from stored RRT segments.
+**Waypoint Capture Strategy:**
+- Start state is captured when planning begins
+- A waypoint is captured each time a robot advances its timestep (transitions to next region)
+- Final state is added if it differs from the last waypoint
+
+This provides a meaningful path representation showing progression through the region decomposition, with waypoints at region boundaries.
+
+**Example Output:**
+For forced coordination scenario:
+- Robot 0: `[2.5,5,0]` → `[5.99,4.04,2.99]` → `[7.5,5,0]` (left to right)
+- Robot 1: `[7.5,5,0]` → `[5.35,3.12,2.78]` → `[2.5,5,0]` (right to left)
+
+**Future enhancement**: Add additional intermediate states from RRT segments for smoother paths, or implement path smoothing/interpolation.
 
 ## Coordination Strategies
 
@@ -333,13 +362,25 @@ if (solved) {
 ## Current Limitations and Future Work
 
 ### Current Limitations
-1. **Simple path reconstruction**: Only stores start and end states
-2. **No lead recomputation**: Leads computed once at start
-3. **Fixed coordination**: Always uses composite space for co-located robots
-4. **No prioritization**: All robots treated equally
+1. **No lead recomputation**: Leads computed once at start
+2. **Fixed coordination**: Always uses composite space for co-located robots
+3. **No prioritization**: All robots treated equally
+4. **Coarse waypoints**: Path waypoints only at region boundaries (timestep advances)
+
+### Recent Improvements (2025-12-15)
+
+**1. Fixed Composite Space Planning**
+- **Problem**: Robots in composite space were stuck, only sampling from current region
+- **Solution**: Each robot now samples from its own next region (80% probability)
+- **Impact**: Composite coordination now works correctly, robots make progress toward individual goals
+
+**2. Implemented Waypoint-Based Path Reconstruction**
+- **Problem**: Paths only contained start and goal states
+- **Solution**: Capture waypoints at each timestep advancement
+- **Impact**: Solution paths now show meaningful progression through workspace
 
 ### Future Enhancements
-1. **Full path reconstruction**: Store complete RRT trees in segments
+1. **Denser path reconstruction**: Add intermediate states from RRT segments between waypoints
 2. **Adaptive leads**: Recompute leads when stuck or environment changes
 3. **Flexible coordination**: Options for prioritized planning, CBS, etc.
 4. **Dynamic obstacles**: Support for moving obstacles
@@ -388,4 +429,4 @@ For questions or contributions related to this implementation, please refer to t
 ---
 
 *Last updated: 2025-12-15*
-*Implementation status: Core algorithm complete, optimization and advanced features pending*
+*Implementation status: Core algorithm complete with working composite coordination and waypoint-based path reconstruction. Optimization and advanced features pending.*

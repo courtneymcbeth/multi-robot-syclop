@@ -4,13 +4,13 @@
 goal_epsilon: 0.5
 
 # Grid decomposition resolution (creates a grid_resolution x grid_resolution grid)
-grid_resolution: 16
+grid_resolution: 20
 
 # Number of region expansions per iteration
-num_region_expansions: 10
+num_region_expansions: 20
 
 # Number of tree selections per region expansion
 num_tree_selections: 1
 
 # Probability of using shortest path (A*) vs random exploration
-prob_shortest_path: 0.95
+prob_shortest_path: 0.90
