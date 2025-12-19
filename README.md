@@ -25,6 +25,6 @@ cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="../install"
 
 ## Relevant Files
 
-`src/mr_syclop.cpp`: high-level implementation of SyCLoMP ana its main function (builds into an executable)
+`src/mr_syclop.cpp`: high-level implementation of SyCLoMP and its main function (builds into an executable)
 
 `src/<TBD>.cpp`: comparison methods (Courtney's TODO)
