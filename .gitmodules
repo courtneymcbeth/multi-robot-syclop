@@ -10,3 +10,6 @@
 [submodule "eigenpy"]
 	path = eigenpy
 	url = https://github.com/stack-of-tasks/eigenpy.git
+[submodule "pinocchio"]
+	path = pinocchio
+	url = https://github.com/stack-of-tasks/pinocchio.git

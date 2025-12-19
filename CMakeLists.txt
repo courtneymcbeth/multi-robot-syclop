@@ -16,10 +16,21 @@ set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 add_subdirectory(Multi-Robot-OMPL EXCLUDE_FROM_ALL)
 
+# eigenpy, pinocchio, and crocoddyl are built separately by build.sh and installed to ./install
+add_subdirectory(db-CBS EXCLUDE_FROM_ALL)
+
 include_directories(
   ${FCL_INCLUDE_DIRS}
   ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
   ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
+  ${CMAKE_SOURCE_DIR}/eigenpy/include
+  ${CMAKE_BINARY_DIR}/eigenpy/include
+  ${CMAKE_SOURCE_DIR}/pinocchio/include
+  ${CMAKE_BINARY_DIR}/pinocchio/include
+  ${CMAKE_SOURCE_DIR}/crocoddyl/include
+  ${CMAKE_BINARY_DIR}/crocoddyl/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/src
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/include
 )
 
 # add_library(motion_planning_common
@@ -43,7 +54,7 @@ add_executable(main_mr_syclop
   src/main_mr_syclop.cpp
 )
 target_link_libraries(main_mr_syclop
-  # motion_planning_common
+  motion_planning_common
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
   ompl
