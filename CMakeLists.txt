@@ -23,15 +23,12 @@ include_directories(
   ${FCL_INCLUDE_DIRS}
   ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
   ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
-  ${CMAKE_SOURCE_DIR}/eigenpy/include
-  ${CMAKE_BINARY_DIR}/eigenpy/include
-  ${CMAKE_SOURCE_DIR}/pinocchio/include
-  ${CMAKE_BINARY_DIR}/pinocchio/include
-  ${CMAKE_SOURCE_DIR}/crocoddyl/include
-  ${CMAKE_BINARY_DIR}/crocoddyl/include
   ${CMAKE_SOURCE_DIR}/db-CBS/src
   ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/dynobench/include
+  ${CMAKE_SOURCE_DIR}/install/include
 )
+# eigenpy, pinocchio, and crocoddyl are installed to ./install and included above
 
 # add_library(motion_planning_common
 #   src/robots.cpp
@@ -50,17 +47,17 @@ include_directories(
 
 ## kcbs
 
-add_executable(main_mr_syclop
-  src/main_mr_syclop.cpp
+add_executable(mr_syclop
+  src/mr_syclop.cpp
 )
-target_link_libraries(main_mr_syclop
+target_link_libraries(mr_syclop
   motion_planning_common
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
   ompl
   ${FCL_LIBRARIES}
 )
-target_include_directories(main_mr_syclop PUBLIC
+target_include_directories(mr_syclop PUBLIC
   ${YAML_INCLUDE_DIRS}
   ${FCL_INCLUDE_DIRS}
 )
