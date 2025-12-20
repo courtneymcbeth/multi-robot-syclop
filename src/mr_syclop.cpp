@@ -31,6 +31,8 @@
 // #include "multirobot_trajectory.hpp"
 #include "dynoplan/optimization/multirobot_optimization.hpp"
 
+#include "decomposition.h"
+
 namespace ob = ompl::base;
 namespace oc = ompl::control;
 
@@ -126,9 +128,7 @@ int main(int argc, char* argv[]) {
 
     // load config file
     YAML::Node cfg = YAML::LoadFile(cfgFile);
-    // cfg = cfg["db-cbs"]["default"];
-    float alpha = cfg["alpha"].as<float>();
-    bool filter_duplicates = cfg["filter_duplicates"].as<bool>();
+    float decompRegionLength = cfg["decompRegionLength"].as<float>();
 
     // load problem description
     YAML::Node env = YAML::LoadFile(inputFile);
@@ -186,6 +186,15 @@ int main(int argc, char* argv[]) {
         goals.push_back(goal_reals);
         robot_types.push_back(robotType);
     }
+
+    // Create decomposition based on decomposition length and workspace bounds
+    ob::RealVectorBounds workspace_bounds(2);
+    workspace_bounds.setLow(0, env_min[0].as<double>());
+    workspace_bounds.setLow(1, env_min[1].as<double>());
+    workspace_bounds.setHigh(0, env_max[0].as<double>());
+    workspace_bounds.setHigh(1, env_max[1].as<double>());
+    GridDecompositionImpl *decomp = new GridDecompositionImpl(
+        decompRegionLength, 2, workspace_bounds);
 
     // Compute high-level paths over decomposition
     compute_high_level_paths();

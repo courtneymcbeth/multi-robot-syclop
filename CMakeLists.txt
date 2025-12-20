@@ -49,6 +49,7 @@ include_directories(
 
 add_executable(mr_syclop
   src/mr_syclop.cpp
+  src/decomposition.cpp
 )
 target_link_libraries(mr_syclop
   motion_planning_common
