@@ -3,15 +3,14 @@
 
 environment:
   min: [0.0, 0.0]
-  max: [10.0, 10.0]
+  max: [100.0, 100.0]
+  obstacles: []
 
 robots:
-  - name: robot0
-    radius: 0.5  # Robot radius for collision checking
+  - type: unicycle_first_order_0_sphere
     start: [2.0, 2.0, 0.0]  # [x, y, theta]
-    goal: [8.0, 8.0, 0.0]
+    goal: [98.0, 98.0, 0.0]
 
-  - name: robot1
-    radius: 0.5  # Robot radius for collision checking
-    start: [8.0, 8.0, 0.0]
+  - type: unicycle_first_order_0_sphere
+    start: [98.0, 98.0, 0.0]
     goal: [2.0, 2.0, 0.0]

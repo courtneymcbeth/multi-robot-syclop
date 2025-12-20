@@ -18,12 +18,14 @@
 #include <ompl/control/planners/sst/SST.h>
 // #include <ompl/base/objectives/ControlDurationObjective.h>
 #include <ompl/base/OptimizationObjective.h>
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/astar_search.hpp>
 
 #include "robots.h"
 #include "robotStatePropagator.hpp"
 #include "fclStateValidityChecker.hpp"
 
-// #define DBG_PRINTS
+#define DBG_PRINTS
 #include "db_astar.hpp"
 #include "planresult.hpp"
 
@@ -41,9 +43,100 @@ Below is skeleton code for SyCLoMP with TODO markers for us.
 Change function definitions or make helper files/classes as needed.
 */
 
-void compute_high_level_paths() {
-    // TODO @courtneymcbeth
-    std::cout << "High-level path computation is not implemented yet." << std::endl;
+// Helper structures for A* search over decomposition
+struct EdgeProperty {
+    double weight;
+};
+
+using RegionGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
+                                          boost::no_property, EdgeProperty>;
+using Vertex = boost::graph_traits<RegionGraph>::vertex_descriptor;
+
+struct found_goal {};
+
+class GoalVisitor : public boost::default_astar_visitor {
+public:
+    GoalVisitor(int goal) : goal_region(goal) {}
+
+    void examine_vertex(Vertex v, const RegionGraph& /*g*/) {
+        if (static_cast<int>(v) == goal_region) {
+            throw found_goal();
+        }
+    }
+
+private:
+    int goal_region;
+};
+
+class SimpleHeuristic : public boost::astar_heuristic<RegionGraph, double> {
+public:
+    SimpleHeuristic() {}
+
+    double operator()(Vertex /*v*/) {
+        return 0.0; // Uniform heuristic (admissible, reduces to Dijkstra's)
+    }
+};
+
+void compute_high_level_paths(oc::DecompositionPtr decomp, std::vector<ob::State*> start_states, std::vector<ob::State*> goal_states, std::vector<std::vector<int>> &high_level_paths) {
+    high_level_paths.clear();
+    high_level_paths.resize(start_states.size());
+
+    // Build the region graph from the decomposition
+    int num_regions = decomp->getNumRegions();
+    RegionGraph graph(num_regions);
+
+    // Add edges with uniform weight 1
+    for (int i = 0; i < num_regions; ++i) {
+        std::vector<int> neighbors;
+        decomp->getNeighbors(i, neighbors);
+        for (int neighbor : neighbors) {
+            auto edge = boost::add_edge(i, neighbor, graph);
+            graph[edge.first].weight = 1.0;
+        }
+    }
+
+    // Iterate over each robot
+    for (size_t robot_idx = 0; robot_idx < start_states.size(); ++robot_idx) {
+        // Get the region IDs for the start and goal states
+        int start_region = decomp->locateRegion(start_states[robot_idx]);
+        int goal_region = decomp->locateRegion(goal_states[robot_idx]);
+
+        if (start_region == goal_region) {
+            high_level_paths[robot_idx].push_back(start_region);
+            continue;
+        }
+
+        // Run A* algorithm to find the high-level path
+        std::vector<Vertex> parents(num_regions);
+        std::vector<double> distances(num_regions);
+
+        try {
+            boost::astar_search(graph, boost::vertex(start_region, graph),
+                                SimpleHeuristic(),
+                                boost::weight_map(boost::get(&EdgeProperty::weight, graph))
+                                    .distance_map(boost::make_iterator_property_map(distances.begin(),
+                                                                                    boost::get(boost::vertex_index, graph)))
+                                    .predecessor_map(boost::make_iterator_property_map(parents.begin(),
+                                                                                        boost::get(boost::vertex_index, graph)))
+                                    .visitor(GoalVisitor(goal_region)));
+        } catch (found_goal) {
+            // Reconstruct the path from start to goal
+            int region = goal_region;
+            int path_length = 1;
+
+            while (region != start_region) {
+                region = parents[region];
+                ++path_length;
+            }
+
+            high_level_paths[robot_idx].resize(path_length);
+            region = goal_region;
+            for (int i = path_length - 1; i >= 0; --i) {
+                high_level_paths[robot_idx][i] = region;
+                region = parents[region];
+            }
+        }
+    }
 }
 
 void compute_kinodynamic_paths() {
@@ -126,14 +219,24 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    // load config file
+    // Load config file
+#ifdef DBG_PRINTS
+    std::cout << "Loading configuration file..." << std::endl;
+#endif
     YAML::Node cfg = YAML::LoadFile(cfgFile);
-    float decompRegionLength = cfg["decompRegionLength"].as<float>();
+    int decompRegionLength = cfg["decomposition_region_length"].as<int>();
+#ifdef DBG_PRINTS
+    std::cout << "  Decomposition region length: " << decompRegionLength << std::endl;
+#endif
 
-    // load problem description
+    // Load problem description
+#ifdef DBG_PRINTS
+    std::cout << "Loading problem description..." << std::endl;
+#endif
     YAML::Node env = YAML::LoadFile(inputFile);
     std::vector<fcl::CollisionObjectf *> obstacles;
     std::vector<std::vector<fcl::Vector3f>> positions;
+
     for (const auto &obs : env["environment"]["obstacles"])
     {
         if (obs["type"].as<std::string>() == "box"){
@@ -150,6 +253,10 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("Unknown obstacle type!");
         }
     }
+#ifdef DBG_PRINTS
+    std::cout << "  Loaded " << obstacles.size() << " obstacles" << std::endl;
+#endif
+
     const auto &env_min = env["environment"]["min"];
     const auto &env_max = env["environment"]["max"];
     ob::RealVectorBounds position_bounds(env_min.size());
@@ -168,9 +275,15 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> robot_types;
 
     std::vector<std::shared_ptr<Robot>> robots;
+#ifdef DBG_PRINTS
+    std::cout << "Initializing robots..." << std::endl;
+#endif
     for (const auto &robot_node : env["robots"]) {
         auto robotType = robot_node["type"].as<std::string>();
         std::shared_ptr<Robot> robot = create_robot(robotType, position_bounds);
+        auto si = robot->getSpaceInformation();
+        si->setStatePropagator(std::make_shared<RobotStatePropagator>(si, robot));
+        si->setup();
         robots.push_back(robot);
 
         std::vector<double> start_reals;
@@ -186,19 +299,56 @@ int main(int argc, char* argv[]) {
         goals.push_back(goal_reals);
         robot_types.push_back(robotType);
     }
+#ifdef DBG_PRINTS
+    std::cout << "  Initialized " << robots.size() << " robots" << std::endl;
+#endif
 
     // Create decomposition based on decomposition length and workspace bounds
+#ifdef DBG_PRINTS
+    std::cout << "Creating decomposition..." << std::endl;
+#endif
     ob::RealVectorBounds workspace_bounds(2);
     workspace_bounds.setLow(0, env_min[0].as<double>());
     workspace_bounds.setLow(1, env_min[1].as<double>());
     workspace_bounds.setHigh(0, env_max[0].as<double>());
     workspace_bounds.setHigh(1, env_max[1].as<double>());
-    GridDecompositionImpl *decomp = new GridDecompositionImpl(
+    oc::DecompositionPtr decomp = std::make_shared<GridDecompositionImpl>(
         decompRegionLength, 2, workspace_bounds);
+#ifdef DBG_PRINTS
+    std::cout << "  Decomposition created with " << decomp->getNumRegions() << " regions" << std::endl;
+#endif
+
+    // Create start and goal states for high-level planning
+    std::vector<ob::State*> start_states;
+    std::vector<ob::State*> goal_states;
+    for (size_t i = 0; i < robots.size(); ++i) {
+        auto si = robots[i]->getSpaceInformation();
+        ob::State* start = si->getStateSpace()->allocState();
+        ob::State* goal = si->getStateSpace()->allocState();
+        si->getStateSpace()->copyFromReals(start, starts[i]);
+        si->getStateSpace()->copyFromReals(goal, goals[i]);
+        start_states.push_back(start);
+        goal_states.push_back(goal);
+    }
 
     // Compute high-level paths over decomposition
-    compute_high_level_paths();
-    
+#ifdef DBG_PRINTS
+    std::cout << "Computing high-level paths..." << std::endl;
+#endif
+    std::vector<std::vector<int>> high_level_paths;
+    compute_high_level_paths(decomp, start_states, goal_states, high_level_paths);
+
+#ifdef DBG_PRINTS
+    std::cout << "High-level paths computed:" << std::endl;
+    for (size_t i = 0; i < high_level_paths.size(); ++i) {
+        std::cout << "  Robot " << i << ": ";
+        for (int region : high_level_paths[i]) {
+            std::cout << region << " ";
+        }
+        std::cout << std::endl;
+    }
+#endif
+
     // Compute kinodynamic low-level paths
     compute_kinodynamic_paths();
 
@@ -213,6 +363,13 @@ int main(int argc, char* argv[]) {
 
     // Write the final plan to the output file
     // TODO anyone: pull this from db-cbs
+
+    // Clean up allocated states
+    for (size_t i = 0; i < robots.size(); ++i) {
+        auto si = robots[i]->getSpaceInformation();
+        si->getStateSpace()->freeState(start_states[i]);
+        si->getStateSpace()->freeState(goal_states[i]);
+    }
 
     return 0;
 }
