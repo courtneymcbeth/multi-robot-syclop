@@ -5,6 +5,7 @@ Requires: matplotlib, pyyaml
 Install: pip install matplotlib pyyaml
 """
 
+import bisect
 import yaml
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -167,7 +168,7 @@ def plot_solution(env_file, solution_file, output_image=None):
     else:
         plt.show()
 
-def animate_solution(env_file, solution_file, output_video=None):
+def animate_solution(env_file, solution_file, output_video=None, speed=5.0, fps=20):
     """Create an animation of the robots moving along their paths"""
 
     # Load environment and solution
@@ -195,6 +196,62 @@ def animate_solution(env_file, solution_file, output_video=None):
     if max_length == 0:
         print("No valid paths to animate")
         return
+
+    def compute_cumulative_distances(path):
+        distances = [0.0]
+        for i in range(1, len(path)):
+            dx = path[i][0] - path[i - 1][0]
+            dy = path[i][1] - path[i - 1][1]
+            distances.append(distances[-1] + float(np.hypot(dx, dy)))
+        return distances
+
+    def interpolate_at_distance(path, distances, distance):
+        if not path:
+            return None
+        if distance <= 0.0:
+            return path[0]
+        total = distances[-1]
+        if distance >= total:
+            return path[-1]
+        idx = bisect.bisect_right(distances, distance) - 1
+        if idx >= len(path) - 1:
+            return path[-1]
+        segment_len = distances[idx + 1] - distances[idx]
+        if segment_len <= 1e-9:
+            return path[idx]
+        ratio = (distance - distances[idx]) / segment_len
+        x = path[idx][0] + ratio * (path[idx + 1][0] - path[idx][0])
+        y = path[idx][1] + ratio * (path[idx + 1][1] - path[idx][1])
+        return [x, y]
+
+    def trail_points(path, distances, distance):
+        if not path:
+            return [], []
+        if distance <= 0.0:
+            return [path[0][0]], [path[0][1]]
+        total = distances[-1]
+        if distance >= total:
+            xs = [p[0] for p in path]
+            ys = [p[1] for p in path]
+            return xs, ys
+        idx = bisect.bisect_right(distances, distance) - 1
+        xs = [p[0] for p in path[:idx + 1]]
+        ys = [p[1] for p in path[:idx + 1]]
+        interp = interpolate_at_distance(path, distances, distance)
+        if interp is not None and (not xs or interp[0] != xs[-1] or interp[1] != ys[-1]):
+            xs.append(interp[0])
+            ys.append(interp[1])
+        return xs, ys
+
+    path_infos = []
+    for path in paths:
+        if path:
+            distances = compute_cumulative_distances(path)
+            total = distances[-1]
+        else:
+            distances = []
+            total = 0.0
+        path_infos.append({"path": path, "distances": distances, "total": total})
 
     # Create figure
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -285,6 +342,19 @@ def animate_solution(env_file, solution_file, output_video=None):
                        verticalalignment='top', fontsize=12,
                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
+    if speed <= 0.0:
+        speed = 1.0
+    if fps <= 0:
+        fps = 20
+    max_time = 0.0
+    for info in path_infos:
+        if info["total"] > 0.0:
+            max_time = max(max_time, info["total"] / speed)
+    if max_time <= 0.0:
+        print("No valid paths to animate")
+        return
+    total_frames = int(np.ceil(max_time * fps)) + 1
+
     def init():
         for artist in robot_artists:
             artist.center = (0, 0)
@@ -294,30 +364,27 @@ def animate_solution(env_file, solution_file, output_video=None):
         return robot_artists + trail_artists + [time_text]
 
     def update(frame):
-        for robot_idx, path in enumerate(paths):
-            if path:
-                # Get current position (loop at end if path is shorter)
-                idx = min(frame, len(path) - 1)
-                state = path[idx]
-
-                # Update robot position
-                robot_artists[robot_idx].center = (state[0], state[1])
-
-                # Update trail
-                trail_states = path[:idx+1]
-                xs = [s[0] for s in trail_states]
-                ys = [s[1] for s in trail_states]
+        t = frame / fps
+        for robot_idx in range(len(paths)):
+            info = path_infos[robot_idx]
+            if info["path"]:
+                distance = min(info["total"], speed * t)
+                state = interpolate_at_distance(info["path"], info["distances"], distance)
+                if state:
+                    robot_artists[robot_idx].center = (state[0], state[1])
+                xs, ys = trail_points(info["path"], info["distances"], distance)
                 trail_artists[robot_idx].set_data(xs, ys)
 
-        time_text.set_text(f'Step: {frame}/{max_length-1}')
+        time_text.set_text(f'Time: {t:.2f}s / {max_time:.2f}s')
         return robot_artists + trail_artists + [time_text]
 
-    anim = FuncAnimation(fig, update, init_func=init, frames=max_length,
-                        interval=200, blit=True, repeat=True)
+    interval_ms = int(1000 / fps)
+    anim = FuncAnimation(fig, update, init_func=init, frames=total_frames,
+                        interval=interval_ms, blit=True, repeat=True)
 
     if output_video:
         print(f"Saving animation to: {output_video}")
-        anim.save(output_video, writer='pillow', fps=5)
+        anim.save(output_video, writer='pillow', fps=fps)
         print("Animation saved!")
     else:
         plt.show()
@@ -329,11 +396,15 @@ def main():
     parser.add_argument('--output', help='Output image file (e.g., solution.png)')
     parser.add_argument('--animate', action='store_true', help='Create animation')
     parser.add_argument('--video', help='Save animation to file (e.g., solution.gif)')
+    parser.add_argument('--speed', type=float, default=1.0,
+                        help='Robot speed in map units per second (default: 1.0)')
+    parser.add_argument('--fps', type=int, default=20,
+                        help='Animation frames per second (default: 20)')
 
     args = parser.parse_args()
 
     if args.animate or args.video:
-        animate_solution(args.env, args.solution, args.video)
+        animate_solution(args.env, args.solution, args.video, args.speed, args.fps)
     else:
         plot_solution(args.env, args.solution, args.output)
 
