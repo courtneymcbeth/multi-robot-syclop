@@ -56,6 +56,31 @@ def get_robot_radius(robot_config):
             return max_radius
     return 0.5
 
+def draw_obstacles(ax, env):
+    obstacles = env.get('environment', {}).get('obstacles', [])
+    for obs in obstacles:
+        obs_type = obs.get('type', '')
+        if obs_type == 'box':
+            size = obs.get('size', [0.0, 0.0])
+            center = obs.get('center', [0.0, 0.0])
+            width = float(size[0])
+            height = float(size[1])
+            x = float(center[0]) - width / 2.0
+            y = float(center[1]) - height / 2.0
+            rect = patches.Rectangle(
+                (x, y),
+                width,
+                height,
+                facecolor='dimgray',
+                edgecolor='black',
+                linewidth=1.5,
+                alpha=0.6,
+                zorder=1,
+            )
+            ax.add_patch(rect)
+        else:
+            print(f"Warning: Unsupported obstacle type '{obs_type}' in visualization")
+
 def plot_solution(env_file, solution_file, output_image=None):
     """Plot the solution paths for all robots"""
 
@@ -79,6 +104,8 @@ def plot_solution(env_file, solution_file, output_image=None):
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_title('Multi-Robot SyCLoP Solution Paths')
+
+    draw_obstacles(ax, env)
 
     # Draw regions if decomposition data is available
     if 'decomposition' in solution:
@@ -290,6 +317,8 @@ def animate_solution(env_file, solution_file, output_video=None, speed=5.0, fps=
     ax.set_aspect('equal')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
+
+    draw_obstacles(ax, env)
 
     # Draw regions if decomposition data is available
     if 'decomposition' in solution:
