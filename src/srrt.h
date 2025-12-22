@@ -141,6 +141,7 @@ public:
     // Configuration parameters
     void setMaxDistance(double distance) { max_distance_ = distance; }
     void setGoalThreshold(double threshold) { goal_threshold_ = threshold; }
+    void setEdgeCheckStep(double step) { edge_check_step_ = step; }
     double getMaxDistance() const { return max_distance_; }
     double getGoalThreshold() const { return goal_threshold_; }
 
@@ -169,6 +170,7 @@ private:
     // Collision checking
     bool checkRobotObstacleCollision(ob::State* state);
     std::set<int> checkRobotRobotCollisions(ob::State* from, ob::State* to);
+    std::set<int> checkRobotRobotCollisionsAlongEdge(ob::State* from, ob::State* to);
 
     // Update collision sets
     void updateCollisionSet(ForwardMotion* motion, const std::set<int>& new_collisions);
@@ -205,6 +207,7 @@ private:
     // Parameters
     double max_distance_;
     double goal_threshold_;
+    double edge_check_step_;
     double collision_radius_;  // Fallback distance-based collision radius
 };
 

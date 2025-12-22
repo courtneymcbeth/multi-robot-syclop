@@ -14,6 +14,19 @@ import numpy as np
 import argparse
 import sys
 
+DEFAULT_GEOMETRIES = {
+    'single_integrator_0': [('sphere', 0.1)],
+    'double_integrator_0': [('sphere', 0.15)],
+    'unicycle_first_order_0': [('box', 0.5, 0.25)],
+    'unicycle_first_order_0_sphere': [('sphere', 0.4)],
+    'unicycle_second_order_0': [('box', 0.5, 0.25)],
+    'car_first_order_0': [('box', 0.5, 0.25)],
+    'car_first_order_with_1_trailers_0': [
+        ('box', 0.5, 0.25),
+        ('box', 0.3, 0.25),
+    ],
+}
+
 def load_yaml(filename):
     """Load YAML file"""
     try:
@@ -25,6 +38,23 @@ def load_yaml(filename):
     except yaml.YAMLError as e:
         print(f"Error parsing YAML: {e}")
         sys.exit(1)
+
+def get_robot_radius(robot_config):
+    if 'radius' in robot_config:
+        return robot_config['radius']
+    robot_type = robot_config.get('type', '')
+    if robot_type in DEFAULT_GEOMETRIES:
+        max_radius = 0.0
+        for spec in DEFAULT_GEOMETRIES[robot_type]:
+            if spec[0] == 'sphere':
+                radius = spec[1]
+            else:
+                radius = 0.5 * float(np.hypot(spec[1], spec[2]))
+            if radius > max_radius:
+                max_radius = radius
+        if max_radius > 0.0:
+            return max_radius
+    return 0.5
 
 def plot_solution(env_file, solution_file, output_image=None):
     """Plot the solution paths for all robots"""
@@ -125,7 +155,7 @@ def plot_solution(env_file, solution_file, output_image=None):
 
         color = colors[robot_idx]
         robot_name = robot_config.get('name', f'Robot {robot_idx}')
-        robot_radius = robot_config.get('radius', 0.5)
+        robot_radius = get_robot_radius(robot_config)
 
         # Plot path
         ax.plot(xs, ys, '-', color=color, linewidth=2, alpha=0.7, label=f'{robot_name} path')
@@ -324,7 +354,7 @@ def animate_solution(env_file, solution_file, output_video=None, speed=5.0, fps=
     for robot_idx in range(len(paths)):
         color = colors[robot_idx]
         robot_name = env['robots'][robot_idx].get('name', f'Robot {robot_idx}')
-        robot_radius = env['robots'][robot_idx].get('radius', 0.5)
+        robot_radius = get_robot_radius(env['robots'][robot_idx])
 
         # Robot circle with actual size
         robot_circle = plt.Circle((0, 0), robot_radius, color=color, zorder=5,

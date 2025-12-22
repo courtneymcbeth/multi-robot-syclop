@@ -17,63 +17,22 @@
 #include <ompl/base/spaces/RealVectorBounds.h>
 #include <ompl/tools/config/SelfConfig.h>
 #include "../db-CBS/src/robots.h"
+#include "../db-CBS/src/fclStateValidityChecker.hpp"
 
 namespace {
 
-bool srrtDebugEnabled()
+bool debugPrintsEnabled()
 {
-    const char* env = std::getenv("SRRT_DEBUG");
+    const char* env = std::getenv("DBG_PRINTS");
     if (!env) {
         return false;
     }
     return std::string(env) != "0";
 }
 
-int srrtDebugLevel()
+void debugLog(const std::string& tag, const std::string& msg)
 {
-    const char* env = std::getenv("SRRT_DEBUG_LEVEL");
-    if (!env) {
-        return 1;
-    }
-    char* end = nullptr;
-    long level = std::strtol(env, &end, 10);
-    if (end == env || level < 0) {
-        return 1;
-    }
-    return static_cast<int>(level);
-}
-
-int srrtDebugEvery()
-{
-    const char* env = std::getenv("SRRT_DEBUG_EVERY");
-    if (!env) {
-        return 200;
-    }
-    char* end = nullptr;
-    long every = std::strtol(env, &end, 10);
-    if (end == env || every <= 0) {
-        return 200;
-    }
-    return static_cast<int>(every);
-}
-
-int srrtDebugPolicyMax()
-{
-    const char* env = std::getenv("SRRT_DEBUG_POLICY_MAX");
-    if (!env) {
-        return 200;
-    }
-    char* end = nullptr;
-    long max_nodes = std::strtol(env, &end, 10);
-    if (end == env) {
-        return 200;
-    }
-    return static_cast<int>(max_nodes);
-}
-
-void srrtDebugLog(const std::string& tag, const std::string& msg)
-{
-    if (!srrtDebugEnabled()) {
+    if (!debugPrintsEnabled()) {
         return;
     }
     std::cout << "[sRRT][" << tag << "] " << msg << std::endl;
@@ -137,43 +96,53 @@ std::string formatDistances(const std::vector<double>& distances)
     return oss.str();
 }
 
-struct DebugCounters {
-    size_t iterations = 0;
-    size_t samples = 0;
-    size_t motions_added = 0;
-    size_t obstacle_rejects = 0;
-    size_t collision_events = 0;
-    size_t policy_nulls = 0;
-    size_t policy_used = 0;
-    size_t policy_zero_steps = 0;
-    size_t sample_used = 0;
-    size_t zero_extensions = 0;
-    size_t max_collision_set = 0;
-    std::vector<double> best_goal_dist;
+class CompositeObstacleValidityChecker : public ob::StateValidityChecker
+{
+public:
+    CompositeObstacleValidityChecker(
+        const ob::SpaceInformationPtr& si,
+        const std::shared_ptr<fcl::BroadPhaseCollisionManagerf>& col_mng_environment,
+        const std::vector<std::shared_ptr<Robot>>& robots)
+        : ob::StateValidityChecker(si),
+          col_mng_environment_(col_mng_environment),
+          robots_(robots)
+    {
+    }
+
+    bool isValid(const ob::State* state) const override
+    {
+        if (!si_->satisfiesBounds(state)) {
+            return false;
+        }
+
+        const auto* compound_state = state->as<ob::CompoundStateSpace::StateType>();
+
+        for (size_t i = 0; i < robots_.size(); ++i) {
+            const auto& robot = robots_[i];
+            const ob::State* robot_state = compound_state->components[i];
+            for (size_t part = 0; part < robot->numParts(); ++part) {
+                const auto& transform = robot->getTransform(robot_state, part);
+                fcl::CollisionObjectf robot_co(robot->getCollisionGeometry(part));
+                robot_co.setTranslation(transform.translation());
+                robot_co.setRotation(transform.rotation());
+                robot_co.computeAABB();
+
+                fcl::DefaultCollisionData<float> collision_data;
+                col_mng_environment_->collide(&robot_co, &collision_data,
+                                              fcl::DefaultCollisionFunction<float>);
+                if (collision_data.result.isCollision()) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+private:
+    std::shared_ptr<fcl::BroadPhaseCollisionManagerf> col_mng_environment_;
+    std::vector<std::shared_ptr<Robot>> robots_;
 };
-
-DebugCounters& debugCounters()
-{
-    static DebugCounters counters;
-    return counters;
-}
-
-struct ProjectionDebugInfo {
-    std::vector<std::string> choices;
-};
-
-ProjectionDebugInfo& projectionDebugInfo()
-{
-    static ProjectionDebugInfo info;
-    return info;
-}
-
-void resetDebugCounters(int num_robots)
-{
-    DebugCounters fresh;
-    fresh.best_goal_dist.assign(num_robots, std::numeric_limits<double>::infinity());
-    debugCounters() = std::move(fresh);
-}
 
 }  // namespace
 
@@ -217,7 +186,7 @@ void IndividualPolicyTree::buildTree(ob::State* start_state, ob::State* goal_sta
 {
     std::cout << "Building individual policy tree for robot " << robot_id_ << std::endl;
 
-    if (srrtDebugEnabled()) {
+    if (debugPrintsEnabled()) {
         std::ostringstream oss;
         oss << "Robot " << robot_id_ << " start=" << formatSe2State(start_state)
             << " goal=" << formatSe2State(goal_state)
@@ -225,7 +194,7 @@ void IndividualPolicyTree::buildTree(ob::State* start_state, ob::State* goal_sta
             << " start_valid=" << si_->isValid(start_state)
             << " goal_valid=" << si_->isValid(goal_state)
             << " timeout=" << timeout;
-        srrtDebugLog("POLICY", oss.str());
+        debugLog("POLICY", oss.str());
     }
 
     // Store goal for later use
@@ -256,11 +225,11 @@ void IndividualPolicyTree::buildTree(ob::State* start_state, ob::State* goal_sta
 
     std::cout << "Robot " << robot_id_ << " policy tree: " << status << std::endl;
 
-    if (srrtDebugEnabled()) {
+    if (debugPrintsEnabled()) {
         std::ostringstream oss;
         oss << "Robot " << robot_id_ << " policy status=" << status
             << " solutions=" << pdef_->getSolutionCount();
-        srrtDebugLog("POLICY", oss.str());
+        debugLog("POLICY", oss.str());
     }
 
     // Extract tree structure for efficient policy queries
@@ -311,34 +280,9 @@ void IndividualPolicyTree::extractTreeStructure()
     std::cout << "Extracted " << policy_nodes_.size() << " policy nodes for robot "
               << robot_id_ << std::endl;
 
-    if (srrtDebugEnabled() && policy_nodes_.empty()) {
-        srrtDebugLog("POLICY", "Robot " + std::to_string(robot_id_) +
+    if (debugPrintsEnabled() && policy_nodes_.empty()) {
+        debugLog("POLICY", "Robot " + std::to_string(robot_id_) +
                                " policy tree is empty after extraction.");
-    }
-
-    if (srrtDebugEnabled() && srrtDebugLevel() >= 2) {
-        const int max_nodes = srrtDebugPolicyMax();
-        const size_t total = policy_nodes_.size();
-        const size_t to_print = (max_nodes <= 0)
-                                    ? total
-                                    : std::min(total, static_cast<size_t>(max_nodes));
-        srrtDebugLog("POLICY_TREE", "Robot " + std::to_string(robot_id_) +
-                                        " nodes=" + std::to_string(total) +
-                                        " printing=" + std::to_string(to_print));
-        for (size_t i = 0; i < to_print; ++i) {
-            const auto* node = policy_nodes_[i];
-            std::ostringstream oss;
-            oss << "node[" << i << "] state=" << formatSe2State(node->state);
-            if (node->parent_state) {
-                oss << " parent=" << formatSe2State(node->parent_state);
-            } else {
-                oss << " parent=<root>";
-            }
-            srrtDebugLog("POLICY_TREE", oss.str());
-        }
-        if (to_print < total) {
-            srrtDebugLog("POLICY_TREE", "Truncated output. Set SRRT_DEBUG_POLICY_MAX=0 to print all nodes.");
-        }
     }
 }
 
@@ -407,8 +351,8 @@ void ForwardSearchTree::initialize(ob::State* start_state)
     root_->parent = nullptr;
     root_->collision_set.clear();
 
-    if (srrtDebugEnabled()) {
-        srrtDebugLog("FORWARD", "Root state=" + formatCompositeState(root_->state, num_robots_));
+    if (debugPrintsEnabled()) {
+        debugLog("FORWARD", "Root state=" + formatCompositeState(root_->state, num_robots_));
     }
 
     // Add to tree
@@ -446,7 +390,8 @@ sRRTPlanner::sRRTPlanner(const ob::SpaceInformationPtr& si,
                          const std::vector<ob::SpaceInformationPtr>& individual_si,
                          const std::vector<std::shared_ptr<Robot>>& robots)
     : composite_si_(si), individual_si_(individual_si), num_robots_(num_robots),
-      robots_(robots), max_distance_(0.5), goal_threshold_(0.1), collision_radius_(0.5)
+      robots_(robots), max_distance_(0.5), goal_threshold_(0.1),
+      edge_check_step_(0.0), collision_radius_(0.5)
 {
     std::cout << "Initializing sRRT planner for " << num_robots << " robots" << std::endl;
 
@@ -465,15 +410,13 @@ bool sRRTPlanner::solve(const std::vector<ob::State*>& start_states,
 {
     std::cout << "Starting sRRT planning..." << std::endl;
 
-    if (srrtDebugEnabled()) {
-        resetDebugCounters(num_robots_);
+    if (debugPrintsEnabled()) {
         std::ostringstream oss;
-        oss << "Debug enabled level=" << srrtDebugLevel()
-            << " report_every=" << srrtDebugEvery()
-            << " max_distance=" << max_distance_
+        oss << "max_distance=" << max_distance_
             << " goal_threshold=" << goal_threshold_
+            << " edge_check_step=" << edge_check_step_
             << " timeout=" << timeout;
-        srrtDebugLog("CONFIG", oss.str());
+        debugLog("CONFIG", oss.str());
     }
 
     // Phase 1: Build individual policies (backward trees)
@@ -537,10 +480,7 @@ bool sRRTPlanner::mainSearchLoop(const std::vector<ob::State*>& goal_states, dou
 
     auto start_time = std::chrono::high_resolution_clock::now();
     int iterations = 0;
-    const bool debug_enabled = srrtDebugEnabled();
-    const int debug_level = srrtDebugLevel();
-    const int debug_every = srrtDebugEvery();
-    auto& counters = debugCounters();
+    const bool debug_enabled = debugPrintsEnabled();
 
     std::vector<ob::State*> debug_goal_states;
     if (debug_enabled) {
@@ -550,8 +490,10 @@ bool sRRTPlanner::mainSearchLoop(const std::vector<ob::State*>& goal_states, dou
         }
     }
     std::vector<double> current_goal_distances;
+    std::vector<double> best_goal_distances;
     if (debug_enabled) {
         current_goal_distances.resize(num_robots_, 0.0);
+        best_goal_distances.assign(num_robots_, std::numeric_limits<double>::infinity());
     }
 
     auto cleanup_debug_states = [&]() {
@@ -573,45 +515,25 @@ bool sRRTPlanner::mainSearchLoop(const std::vector<ob::State*>& goal_states, dou
         if (elapsed > timeout) {
             std::cout << "Timeout after " << iterations << " iterations" << std::endl;
             if (debug_enabled) {
-                srrtDebugLog("LOOP", "Timeout after " + std::to_string(iterations) +
+                debugLog("LOOP", "Timeout after " + std::to_string(iterations) +
                                         " iterations. Best goal distances=" +
-                                        formatDistances(counters.best_goal_dist));
+                                        formatDistances(best_goal_distances));
             }
             cleanup_debug_states();
             return false;
         }
 
-        if (debug_enabled) {
-            counters.iterations++;
-        }
-
         // 1. Sample random state in composite space
         ob::State* qs = sampleCompositeState();
-        if (debug_enabled) {
-            counters.samples++;
-        }
 
         // 2. Find nearest motion in forward tree
         ForwardMotion* qr = findNearestMotion(qs);
         if (debug_enabled && qr == nullptr) {
-            srrtDebugLog("LOOP", "Nearest motion query returned null.");
+            debugLog("LOOP", "Nearest motion query returned null.");
         }
 
         // 3. Project sample onto subdimensional space
         ob::State* qs_proj = projectState(qs, qr);
-        if (debug_enabled) {
-            const auto& proj_info = projectionDebugInfo();
-            std::ostringstream oss;
-            oss << "iter=" << iterations << " choices=[";
-            for (int i = 0; i < num_robots_; ++i) {
-                if (i > 0) {
-                    oss << " ";
-                }
-                oss << "r" << i << ":" << proj_info.choices[i];
-            }
-            oss << "]";
-            srrtDebugLog("PROJECTION", oss.str());
-        }
 
         // 4. Extend from qr toward qs_proj
         ob::State* qnew = extend(qr, qs_proj);
@@ -619,15 +541,6 @@ bool sRRTPlanner::mainSearchLoop(const std::vector<ob::State*>& goal_states, dou
             composite_si_->freeState(qs);
             if (qs_proj) composite_si_->freeState(qs_proj);
             continue;
-        }
-        if (debug_enabled) {
-            std::ostringstream oss;
-            oss << "iter=" << iterations
-                << " sample=" << formatCompositeState(qs, num_robots_)
-                << " nearest=" << formatCompositeState(qr->state, num_robots_)
-                << " projected=" << formatCompositeState(qs_proj, num_robots_)
-                << " extended=" << formatCompositeState(qnew, num_robots_);
-            srrtDebugLog("ITER", oss.str());
         }
 
         // 5. Check for robot-obstacle collisions
@@ -638,63 +551,62 @@ bool sRRTPlanner::mainSearchLoop(const std::vector<ob::State*>& goal_states, dou
             continue;
         }
 
-        // 6. Check for robot-robot collisions
-        std::set<int> new_collisions = checkRobotRobotCollisions(qr->state, qnew);
+        // 6. Check for obstacle collisions along the edge
+        if (!composite_si_->checkMotion(qr->state, qnew)) {
+            composite_si_->freeState(qs);
+            if (qs_proj) composite_si_->freeState(qs_proj);
+            composite_si_->freeState(qnew);
+            continue;
+        }
 
-        // 7. Create new motion with updated collision set
+        // 7. Check for robot-robot collisions along the edge
+        std::set<int> edge_collisions = checkRobotRobotCollisionsAlongEdge(qr->state, qnew);
+        if (!edge_collisions.empty()) {
+            updateCollisionSet(qr, edge_collisions);
+            if (debug_enabled) {
+                debugLog("COLLISION", "iter=" + std::to_string(iterations) +
+                                              " edge_collisions=" + formatCollisionSet(edge_collisions));
+            }
+            composite_si_->freeState(qs);
+            if (qs_proj) composite_si_->freeState(qs_proj);
+            composite_si_->freeState(qnew);
+            continue;
+        }
+
+        std::set<int> new_collisions;
+
+        // 8. Create new motion with updated collision set
         ForwardMotion* new_motion = new ForwardMotion(composite_si_);
         composite_si_->copyState(new_motion->state, qnew);
         new_motion->parent = qr;
         new_motion->collision_set = qr->collision_set;  // Inherit from parent
 
-        // 8. Update collision set with new collisions
+        // 9. Update collision set with new collisions
         updateCollisionSet(new_motion, new_collisions);
 
-        // 9. Add to tree
+        // 10. Add to tree
         forward_tree_->addMotion(new_motion);
         if (debug_enabled) {
-            counters.motions_added++;
-            if (new_motion->collision_set.size() > counters.max_collision_set) {
-                counters.max_collision_set = new_motion->collision_set.size();
-            }
-        }
-
-        if (debug_enabled) {
-            if (!new_collisions.empty()) {
-                srrtDebugLog("COLLISION", "iter=" + std::to_string(iterations) +
-                                              " new_collisions=" + formatCollisionSet(new_collisions));
-            }
-
-            double max_goal_dist = 0.0;
             for (int i = 0; i < num_robots_; ++i) {
                 extractIndividualState(qnew, i, debug_goal_states[i]);
                 double dist = individual_si_[i]->distance(debug_goal_states[i], goal_states[i]);
                 current_goal_distances[i] = dist;
-                if (dist > max_goal_dist) {
-                    max_goal_dist = dist;
-                }
-                if (dist < counters.best_goal_dist[i]) {
-                    counters.best_goal_dist[i] = dist;
-                    if (debug_level >= 2) {
-                        std::ostringstream oss;
-                        oss << "Robot " << i << " best_goal_dist="
-                            << std::fixed << std::setprecision(3) << dist
-                            << " at iter=" << iterations;
-                        srrtDebugLog("GOAL", oss.str());
-                    }
+                if (dist < best_goal_distances[i]) {
+                    best_goal_distances[i] = dist;
                 }
             }
 
             std::ostringstream oss;
             oss << "iter=" << iterations
+                << " tree=" << forward_tree_->getMotions().size()
                 << " state=" << formatCompositeState(qnew, num_robots_)
                 << " goal_dist=" << formatDistances(current_goal_distances)
-                << " max_goal_dist=" << std::fixed << std::setprecision(3) << max_goal_dist
+                << " best_goal=" << formatDistances(best_goal_distances)
                 << " collision_set=" << formatCollisionSet(new_motion->collision_set);
-            srrtDebugLog("NODE", oss.str());
+            debugLog("ITER", oss.str());
         }
 
-        // 10. Check if goal reached
+        // 11. Check if goal reached
         if (isGoalReached(qnew, goal_states)) {
             std::cout << "Goal reached after " << iterations << " iterations!" << std::endl;
             extractPath(new_motion);
@@ -715,21 +627,6 @@ bool sRRTPlanner::mainSearchLoop(const std::vector<ob::State*>& goal_states, dou
                       << forward_tree_->getMotions().size() << std::endl;
         }
 
-        if (debug_enabled && debug_every > 0 && iterations % debug_every == 0) {
-            std::ostringstream oss;
-            oss << "iter=" << iterations
-                << " tree=" << forward_tree_->getMotions().size()
-                << " added=" << counters.motions_added
-                << " samples=" << counters.samples
-                << " obstacle_rejects=" << counters.obstacle_rejects
-                << " collisions=" << counters.collision_events
-                << " zero_extensions=" << counters.zero_extensions
-                << " policy_nulls=" << counters.policy_nulls
-                << " policy_zero_steps=" << counters.policy_zero_steps
-                << " max_collision_set=" << counters.max_collision_set
-                << " best_goal_dist=" << formatDistances(counters.best_goal_dist);
-            srrtDebugLog("LOOP", oss.str());
-        }
     }
 
     cleanup_debug_states();
@@ -760,11 +657,6 @@ ob::State* sRRTPlanner::projectState(ob::State* sample, ForwardMotion* nearest)
 
     // Build vector of individual states for projection
     std::vector<ob::State*> individual_states(num_robots_);
-    ProjectionDebugInfo* proj_info = nullptr;
-    if (srrtDebugEnabled()) {
-        proj_info = &projectionDebugInfo();
-        proj_info->choices.assign(num_robots_, std::string());
-    }
 
     for (int i = 0; i < num_robots_; ++i) {
         individual_states[i] = individual_si_[i]->allocState();
@@ -773,12 +665,6 @@ ob::State* sRRTPlanner::projectState(ob::State* sample, ForwardMotion* nearest)
             // Robot i is in collision set - free to explore
             // Use the sampled state component for this robot
             extractIndividualState(sample, i, individual_states[i]);
-            if (srrtDebugEnabled()) {
-                debugCounters().sample_used++;
-                if (proj_info) {
-                    proj_info->choices[i] = "sample=" + formatSe2State(individual_states[i]);
-                }
-            }
         } else {
             // Robot i is NOT in collision set - follow individual policy
             // Extract current state for this robot from nearest node
@@ -791,38 +677,14 @@ ob::State* sRRTPlanner::projectState(ob::State* sample, ForwardMotion* nearest)
             if (policy_state) {
                 // Policy found - use it
                 individual_si_[i]->copyState(individual_states[i], policy_state);
-                if (srrtDebugEnabled()) {
-                    debugCounters().policy_used++;
-                    double step = individual_si_[i]->distance(current_individual, policy_state);
-                    if (step < 1e-6) {
-                        debugCounters().policy_zero_steps++;
-                        if (srrtDebugLevel() >= 2 && debugCounters().policy_zero_steps <= 5) {
-                            srrtDebugLog("POLICY", "Robot " + std::to_string(i) +
-                                                   " policy step ~0 from state " +
-                                                   formatSe2State(current_individual));
-                        }
-                    }
-                    if (proj_info) {
-                        proj_info->choices[i] = "policy_in=" + formatSe2State(current_individual) +
-                                                " policy_out=" + formatSe2State(policy_state);
-                    }
-                }
             } else {
                 // Policy returned null (shouldn't happen if tree built properly)
                 // Fallback: stay at current state
                 individual_si_[i]->copyState(individual_states[i], current_individual);
-                if (srrtDebugEnabled()) {
-                    debugCounters().policy_nulls++;
-                    if (srrtDebugLevel() >= 2 && debugCounters().policy_nulls <= 5) {
-                        srrtDebugLog("POLICY", "Robot " + std::to_string(i) +
-                                               " policy returned null at state " +
-                                               formatSe2State(current_individual));
-                    }
-                    if (proj_info) {
-                        proj_info->choices[i] = "policy_in=" + formatSe2State(current_individual) +
-                                                " policy_out=null stay=" +
-                                                formatSe2State(current_individual);
-                    }
+                if (debugPrintsEnabled()) {
+                    debugLog("POLICY", "Robot " + std::to_string(i) +
+                                           " policy returned null at state " +
+                                           formatSe2State(current_individual));
                 }
             }
 
@@ -850,14 +712,10 @@ ob::State* sRRTPlanner::extend(ForwardMotion* from, ob::State* toward)
 
     ob::State* qnew = composite_si_->allocState();
 
-    if (srrtDebugEnabled() && d < 1e-6) {
-        debugCounters().zero_extensions++;
-        if (srrtDebugLevel() >= 2 && (debugCounters().zero_extensions <= 5 ||
-                                     debugCounters().zero_extensions % 100 == 0)) {
-            srrtDebugLog("EXTEND", "Zero-length extension from " +
-                                       formatCompositeState(from->state, num_robots_) +
-                                       " toward " + formatCompositeState(toward, num_robots_));
-        }
+    if (debugPrintsEnabled() && d < 1e-6) {
+        debugLog("EXTEND", "Zero-length extension from " +
+                           formatCompositeState(from->state, num_robots_) +
+                           " toward " + formatCompositeState(toward, num_robots_));
     }
 
     if (d <= max_distance_) {
@@ -876,18 +734,45 @@ bool sRRTPlanner::checkRobotObstacleCollision(ob::State* state)
 {
     // Check if any robot collides with static obstacles
     // Uses composite space validity checker
-    bool valid = composite_si_->isValid(state);
-    if (srrtDebugEnabled() && !valid) {
-        auto& counters = debugCounters();
-        counters.obstacle_rejects++;
-        if (srrtDebugLevel() >= 2 &&
-            (counters.obstacle_rejects <= 5 || counters.obstacle_rejects % 100 == 0)) {
-            srrtDebugLog("OBSTACLE", "Invalid state rejected count=" +
-                                       std::to_string(counters.obstacle_rejects) +
-                                       " state=" + formatCompositeState(state, num_robots_));
+    return !composite_si_->isValid(state);
+}
+
+std::set<int> sRRTPlanner::checkRobotRobotCollisionsAlongEdge(ob::State* from, ob::State* to)
+{
+    std::set<int> colliding_robots;
+
+    double dist = composite_si_->distance(from, to);
+    double step = edge_check_step_;
+    if (step <= 0.0) {
+        double max_extent = composite_si_->getStateSpace()->getMaximumExtent();
+        double resolution = composite_si_->getStateValidityCheckingResolution();
+        step = max_extent * resolution;
+    }
+    if (step <= 0.0) {
+        step = dist;
+    }
+
+    int steps = 1;
+    if (step > 0.0 && dist > 0.0) {
+        steps = static_cast<int>(std::ceil(dist / step));
+    }
+    if (steps < 1) {
+        steps = 1;
+    }
+
+    ob::State* temp = composite_si_->allocState();
+    for (int i = 1; i <= steps; ++i) {
+        double t = static_cast<double>(i) / static_cast<double>(steps);
+        composite_si_->getStateSpace()->interpolate(from, to, t, temp);
+        std::set<int> collisions = checkRobotRobotCollisions(from, temp);
+        if (!collisions.empty()) {
+            colliding_robots.insert(collisions.begin(), collisions.end());
+            break;
         }
     }
-    return !valid;
+    composite_si_->freeState(temp);
+
+    return colliding_robots;
 }
 
 std::set<int> sRRTPlanner::checkRobotRobotCollisions(ob::State* from, ob::State* to)
@@ -943,14 +828,6 @@ std::set<int> sRRTPlanner::checkRobotRobotCollisions(ob::State* from, ob::State*
                 // Both robots involved in collision
                 colliding_robots.insert(i);
                 colliding_robots.insert(j);
-                if (srrtDebugEnabled()) {
-                    debugCounters().collision_events++;
-                    if (srrtDebugLevel() >= 2 && debugCounters().collision_events <= 5) {
-                        srrtDebugLog("COLLISION", "Robot pair (" + std::to_string(i) +
-                                                      ", " + std::to_string(j) +
-                                                      ") collision detected.");
-                    }
-                }
             }
         }
     }
@@ -969,10 +846,6 @@ void sRRTPlanner::updateCollisionSet(ForwardMotion* motion, const std::set<int>&
     for (int robot_id : new_collisions) {
         if (motion->collision_set.find(robot_id) == motion->collision_set.end()) {
             motion->collision_set.insert(robot_id);
-            if (srrtDebugEnabled()) {
-                srrtDebugLog("COLLISION_SET", "Added robot " + std::to_string(robot_id) +
-                                                  " new_set=" + formatCollisionSet(motion->collision_set));
-            }
             propagateCollisionSet(motion->parent, robot_id);
         }
     }
@@ -987,10 +860,6 @@ void sRRTPlanner::propagateCollisionSet(ForwardMotion* motion, int robot_id)
         return;  // Already in set, stop propagation
 
     motion->collision_set.insert(robot_id);
-    if (srrtDebugEnabled() && srrtDebugLevel() >= 2) {
-        srrtDebugLog("COLLISION_SET", "Propagated robot " + std::to_string(robot_id) +
-                                          " new_set=" + formatCollisionSet(motion->collision_set));
-    }
     propagateCollisionSet(motion->parent, robot_id);
 }
 
@@ -1104,9 +973,8 @@ int main(int argc, char* argv[]) {
 
     std::cout << "sRRT Planner" << std::endl;
     std::cout << "============" << std::endl;
-    if (srrtDebugEnabled()) {
-        std::cout << "Debug enabled (SRRT_DEBUG=1, level=" << srrtDebugLevel()
-                  << ", report_every=" << srrtDebugEvery() << ")" << std::endl;
+    if (debugPrintsEnabled()) {
+        std::cout << "Debug prints enabled (DBG_PRINTS=1)" << std::endl;
     }
 
     // Load configuration file
@@ -1116,6 +984,10 @@ int main(int argc, char* argv[]) {
     double max_distance = cfg["max_distance"].as<double>();
     double goal_threshold = cfg["goal_threshold"].as<double>();
     double policy_timeout = cfg["policy_timeout"].as<double>();
+    double edge_check_step_cfg = -1.0;
+    if (cfg["edge_check_step"]) {
+        edge_check_step_cfg = cfg["edge_check_step"].as<double>();
+    }
 
     std::cout << "  Max distance: " << max_distance << std::endl;
     std::cout << "  Goal threshold: " << goal_threshold << std::endl;
@@ -1154,6 +1026,11 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "  Loaded " << obstacles.size() << " obstacles" << std::endl;
 
+    std::shared_ptr<fcl::BroadPhaseCollisionManagerf> bpcm_env(
+        new fcl::DynamicAABBTreeCollisionManagerf());
+    bpcm_env->registerObjects(obstacles);
+    bpcm_env->setup();
+
     // Create robots and state spaces
     std::vector<std::shared_ptr<Robot>> robots;
     std::vector<ob::SpaceInformationPtr> individual_si;
@@ -1180,6 +1057,9 @@ int main(int argc, char* argv[]) {
 
         // Create SpaceInformation
         auto si = std::make_shared<ob::SpaceInformation>(space);
+        auto stateValidityChecker =
+            std::make_shared<fclStateValidityChecker>(si, bpcm_env, robot, false);
+        si->setStateValidityChecker(stateValidityChecker);
         si->setStateValidityCheckingResolution(0.01);
         si->setup();
         individual_si.push_back(si);
@@ -1218,14 +1098,33 @@ int main(int argc, char* argv[]) {
         composite_space->addSubspace(individual_si[i]->getStateSpace(), 1.0);
     }
     auto composite_si = std::make_shared<ob::SpaceInformation>(composite_space);
+    auto composite_checker =
+        std::make_shared<CompositeObstacleValidityChecker>(composite_si, bpcm_env, robots);
+    composite_si->setStateValidityChecker(composite_checker);
     composite_si->setStateValidityCheckingResolution(0.01);
     composite_si->setup();
+
+    double edge_check_step = edge_check_step_cfg;
+    const char* edge_check_source = "cfg";
+    if (edge_check_step <= 0.0) {
+        double max_extent = composite_si->getStateSpace()->getMaximumExtent();
+        double resolution = composite_si->getStateValidityCheckingResolution();
+        edge_check_step = max_extent * resolution;
+        edge_check_source = "auto";
+    }
+    if (edge_check_step <= 0.0) {
+        edge_check_step = 1.0;
+        edge_check_source = "fallback";
+    }
+    std::cout << "  Edge check step: " << edge_check_step
+              << " (" << edge_check_source << ")" << std::endl;
 
     // Create sRRT planner
     std::cout << "Creating sRRT planner..." << std::endl;
     sRRTPlanner planner(composite_si, num_robots, individual_si, robots);
     planner.setMaxDistance(max_distance);
     planner.setGoalThreshold(goal_threshold);
+    planner.setEdgeCheckStep(edge_check_step);
 
     // Solve
     std::cout << "Starting planning (timeout: " << timelimit << "s)..." << std::endl;
