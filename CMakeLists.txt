@@ -62,3 +62,20 @@ target_include_directories(mr_syclop PUBLIC
   ${YAML_INCLUDE_DIRS}
   ${FCL_INCLUDE_DIRS}
 )
+
+## srrt
+
+add_executable(srrt
+  src/srrt.cpp
+)
+target_link_libraries(srrt
+  motion_planning_common
+  ompl
+  ${FCL_LIBRARIES}
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+)
+target_include_directories(srrt PUBLIC
+  ${FCL_INCLUDE_DIRS}
+  ${YAML_INCLUDE_DIRS}
+)
