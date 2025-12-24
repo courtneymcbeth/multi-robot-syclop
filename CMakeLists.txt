@@ -79,3 +79,20 @@ target_include_directories(srrt PUBLIC
   ${FCL_INCLUDE_DIRS}
   ${YAML_INCLUDE_DIRS}
 )
+
+## coupled_rrt
+
+add_executable(coupled_rrt
+  src/coupled_rrt.cpp
+)
+target_link_libraries(coupled_rrt
+  motion_planning_common
+  ompl
+  ${FCL_LIBRARIES}
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+)
+target_include_directories(coupled_rrt PUBLIC
+  ${FCL_INCLUDE_DIRS}
+  ${YAML_INCLUDE_DIRS}
+)

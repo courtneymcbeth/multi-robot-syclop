@@ -1,0 +1,5 @@
+# Configuration file for coupled_rrt planner
+
+goal_threshold: 2.0           # Distance threshold to consider goal reached
+min_control_duration: 1       # Minimum number of propagation steps per control
+max_control_duration: 10      # Maximum number of propagation steps per control
