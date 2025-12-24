@@ -96,3 +96,20 @@ target_include_directories(coupled_rrt PUBLIC
   ${FCL_INCLUDE_DIRS}
   ${YAML_INCLUDE_DIRS}
 )
+
+## decoupled_rrt
+
+add_executable(decoupled_rrt
+  src/decoupled_rrt.cpp
+)
+target_link_libraries(decoupled_rrt
+  motion_planning_common
+  ompl
+  ${FCL_LIBRARIES}
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+)
+target_include_directories(decoupled_rrt PUBLIC
+  ${FCL_INCLUDE_DIRS}
+  ${YAML_INCLUDE_DIRS}
+)

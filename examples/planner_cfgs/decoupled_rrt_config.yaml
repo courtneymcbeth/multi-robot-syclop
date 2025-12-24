@@ -1,0 +1,16 @@
+# Configuration file for decoupled_rrt (Prioritized Planning)
+# This planner uses a decoupled approach where robots are assigned priorities
+# and planned sequentially. Lower priority robots avoid higher priority robots
+# by treating them as dynamic obstacles.
+
+# Goal distance threshold - robots must reach within this distance of their goals
+goal_threshold: 0.5
+
+# Minimum control duration (number of propagation steps)
+min_control_duration: 1
+
+# Maximum control duration (number of propagation steps)
+max_control_duration: 10
+
+# Propagation step size (time step for state propagation)
+propagation_step_size: 0.1
