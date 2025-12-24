@@ -83,50 +83,77 @@ def draw_obstacles(ax, env):
         else:
             print(f"Warning: Unsupported obstacle type '{obs_type}' in visualization")
 
-def compute_cumulative_distances(path):
-    distances = [0.0]
-    for i in range(1, len(path)):
-        dx = path[i][0] - path[i - 1][0]
-        dy = path[i][1] - path[i - 1][1]
-        distances.append(distances[-1] + float(np.hypot(dx, dy)))
-    return distances
+def compute_segment_max_distances(paths, num_segments):
+    max_distances = [0.0] * num_segments
+    for path in paths:
+        if len(path) < 2:
+            continue
+        limit = min(len(path) - 1, num_segments)
+        for i in range(limit):
+            dx = path[i + 1][0] - path[i][0]
+            dy = path[i + 1][1] - path[i][1]
+            dist = float(np.hypot(dx, dy))
+            if dist > max_distances[i]:
+                max_distances[i] = dist
+    return max_distances
 
-def interpolate_at_distance(path, distances, distance):
+def build_waypoint_times(segment_max_distances, speed):
+    waypoint_times = [0.0]
+    for dist in segment_max_distances:
+        if dist <= 1e-9:
+            waypoint_times.append(waypoint_times[-1])
+        else:
+            waypoint_times.append(waypoint_times[-1] + dist / speed)
+    return waypoint_times
+
+def interpolate_at_time(path, waypoint_times, t):
     if not path:
         return None
-    if distance <= 0.0:
+    if t <= 0.0:
         return path[0]
-    total = distances[-1]
-    if distance >= total:
+    if t >= waypoint_times[-1]:
         return path[-1]
-    idx = bisect.bisect_right(distances, distance) - 1
-    if idx >= len(path) - 1:
+    end_times = waypoint_times[1:]
+    seg_idx = bisect.bisect_right(end_times, t)
+    if seg_idx >= len(path) - 1:
         return path[-1]
-    segment_len = distances[idx + 1] - distances[idx]
-    if segment_len <= 1e-9:
-        return path[idx]
-    ratio = (distance - distances[idx]) / segment_len
-    x = path[idx][0] + ratio * (path[idx + 1][0] - path[idx][0])
-    y = path[idx][1] + ratio * (path[idx + 1][1] - path[idx][1])
+    start_time = waypoint_times[seg_idx]
+    end_time = waypoint_times[seg_idx + 1]
+    duration = end_time - start_time
+    if duration <= 1e-9:
+        return path[seg_idx]
+    ratio = (t - start_time) / duration
+    ratio = min(max(ratio, 0.0), 1.0)
+    x = path[seg_idx][0] + ratio * (path[seg_idx + 1][0] - path[seg_idx][0])
+    y = path[seg_idx][1] + ratio * (path[seg_idx + 1][1] - path[seg_idx][1])
     return [x, y]
 
-def trail_points(path, distances, distance):
+def trail_points(path, waypoint_times, t):
     if not path:
         return [], []
-    if distance <= 0.0:
+    if t <= 0.0:
         return [path[0][0]], [path[0][1]]
-    total = distances[-1]
-    if distance >= total:
+    if t >= waypoint_times[-1]:
         xs = [p[0] for p in path]
         ys = [p[1] for p in path]
         return xs, ys
-    idx = bisect.bisect_right(distances, distance) - 1
-    xs = [p[0] for p in path[:idx + 1]]
-    ys = [p[1] for p in path[:idx + 1]]
-    interp = interpolate_at_distance(path, distances, distance)
-    if interp is not None and (not xs or interp[0] != xs[-1] or interp[1] != ys[-1]):
-        xs.append(interp[0])
-        ys.append(interp[1])
+    end_times = waypoint_times[1:]
+    seg_idx = bisect.bisect_right(end_times, t)
+    last_idx = min(seg_idx, len(path) - 1)
+    xs = [p[0] for p in path[:last_idx + 1]]
+    ys = [p[1] for p in path[:last_idx + 1]]
+    if seg_idx < len(path) - 1:
+        start_time = waypoint_times[seg_idx]
+        end_time = waypoint_times[seg_idx + 1]
+        duration = end_time - start_time
+        if duration > 1e-9:
+            ratio = (t - start_time) / duration
+            ratio = min(max(ratio, 0.0), 1.0)
+            interp_x = path[seg_idx][0] + ratio * (path[seg_idx + 1][0] - path[seg_idx][0])
+            interp_y = path[seg_idx][1] + ratio * (path[seg_idx + 1][1] - path[seg_idx][1])
+            if not xs or interp_x != xs[-1] or interp_y != ys[-1]:
+                xs.append(interp_x)
+                ys.append(interp_y)
     return xs, ys
 
 def interactive_animation(env_file, solution_file, initial_speed=1.0):
@@ -152,24 +179,20 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0):
         else:
             paths.append([])
 
-    # Compute path information
-    path_infos = []
-    for path in paths:
-        if path:
-            distances = compute_cumulative_distances(path)
-            total = distances[-1]
-        else:
-            distances = []
-            total = 0.0
-        path_infos.append({"path": path, "distances": distances, "total": total})
+    if initial_speed <= 0.0:
+        initial_speed = 1.0
 
-    max_distance = max([info["total"] for info in path_infos if info["total"] > 0.0], default=0.0)
-
-    if max_distance <= 0.0:
+    max_points = max((len(path) for path in paths if path), default=0)
+    if max_points < 2:
         print("No valid paths to animate")
         return
+    segment_max_distances = compute_segment_max_distances(paths, max_points - 1)
+    waypoint_times = build_waypoint_times(segment_max_distances, initial_speed)
+    max_time = waypoint_times[-1]
 
-    max_time = max_distance / initial_speed
+    if max_time <= 0.0:
+        print("No valid paths to animate")
+        return
 
     # Create figure with space for slider at the bottom
     fig = plt.figure(figsize=(12, 10))
@@ -288,13 +311,12 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0):
     def update_display(t):
         """Update robot positions and trails based on time t"""
         for robot_idx in range(len(paths)):
-            info = path_infos[robot_idx]
-            if info["path"]:
-                distance = min(info["total"], initial_speed * t)
-                state = interpolate_at_distance(info["path"], info["distances"], distance)
+            path = paths[robot_idx]
+            if path:
+                state = interpolate_at_time(path, waypoint_times, t)
                 if state:
                     robot_artists[robot_idx].center = (state[0], state[1])
-                xs, ys = trail_points(info["path"], info["distances"], distance)
+                xs, ys = trail_points(path, waypoint_times, t)
                 trail_artists[robot_idx].set_data(xs, ys)
 
         progress_pct = (t / max_time * 100) if max_time > 0 else 0
