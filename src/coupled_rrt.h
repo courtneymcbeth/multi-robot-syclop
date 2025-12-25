@@ -1,0 +1,108 @@
+#ifndef COUPLED_RRT_H
+#define COUPLED_RRT_H
+
+#include <ompl/control/PathControl.h>
+#include <ompl/control/SpaceInformation.h>
+#include <ompl/base/ProblemDefinition.h>
+#include <fcl/fcl.h>
+#include <memory>
+#include <vector>
+#include <string>
+
+namespace ob = ompl::base;
+namespace oc = ompl::control;
+
+// ============================================================================
+// Configuration Structures
+// ============================================================================
+
+struct CoupledRRTConfig {
+    double time_limit = 60.0;
+    double goal_threshold = 0.5;
+    int min_control_duration = 1;
+    int max_control_duration = 10;
+};
+
+// ============================================================================
+// Input Structures
+// ============================================================================
+
+struct RobotSpec {
+    std::string type;              // Robot type string (e.g., "DiffDrive", "Unicycle")
+    std::vector<double> start;     // Start state [x, y, theta, ...]
+    std::vector<double> goal;      // Goal state [x, y, theta, ...]
+};
+
+struct ObstacleSpec {
+    std::string type;              // Obstacle type (e.g., "box")
+    std::vector<double> size;      // Size parameters
+    std::vector<double> center;    // Center position
+};
+
+struct PlanningProblem {
+    std::vector<double> env_min;   // Environment bounds minimum [x_min, y_min]
+    std::vector<double> env_max;   // Environment bounds maximum [x_max, y_max]
+    std::vector<RobotSpec> robots; // Robot specifications
+    std::vector<ObstacleSpec> obstacles; // Obstacle specifications
+};
+
+// ============================================================================
+// Output Structure
+// ============================================================================
+
+struct PlanningResult {
+    bool solved;                               // Whether exact solution was found
+    double planning_time;                      // Time spent planning (seconds)
+    std::shared_ptr<oc::PathControl> path;     // Solution path (compound path for all robots)
+};
+
+// ============================================================================
+// Forward Declarations
+// ============================================================================
+
+class Robot;
+class CompoundStatePropagator;
+class CompoundStateValidityChecker;
+
+// ============================================================================
+// CoupledRRTPlanner Class
+// ============================================================================
+
+class CoupledRRTPlanner {
+public:
+    // Constructor
+    explicit CoupledRRTPlanner(const CoupledRRTConfig& config);
+
+    // Destructor
+    ~CoupledRRTPlanner();
+
+    // Main planning function
+    PlanningResult plan(const PlanningProblem& problem);
+
+private:
+    // Configuration
+    CoupledRRTConfig config_;
+
+    // Helper methods for setup
+    void setupEnvironment(const PlanningProblem& problem);
+    void setupRobots(const PlanningProblem& problem);
+    void setupCompoundSpaces();
+    void setupProblemDefinition();
+    void cleanup();
+
+    // Internal state (cleaned up between planning calls)
+    std::shared_ptr<fcl::BroadPhaseCollisionManagerf> col_mng_environment_;
+    std::vector<fcl::CollisionObjectf*> obstacles_;
+    std::vector<std::shared_ptr<Robot>> robots_;
+    std::vector<ob::State*> start_states_;
+    std::vector<ob::State*> goal_states_;
+
+    std::shared_ptr<ob::CompoundStateSpace> compound_state_space_;
+    std::shared_ptr<oc::CompoundControlSpace> compound_control_space_;
+    std::shared_ptr<oc::SpaceInformation> compound_si_;
+    std::shared_ptr<ob::ProblemDefinition> pdef_;
+
+    ob::RealVectorBounds position_bounds_;
+};
+
+#endif // COUPLED_RRT_H

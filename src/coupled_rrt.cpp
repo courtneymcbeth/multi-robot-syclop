@@ -5,6 +5,8 @@
 * robots, using kinodynamic RRT with control sampling and propagation.
 *********************************************************************/
 
+#include "coupled_rrt.h"
+
 // OMPL headers
 #include <ompl/control/SpaceInformation.h>
 #include <ompl/control/ControlSpace.h>
@@ -24,23 +26,15 @@
 
 // Standard library
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <memory>
 #include <chrono>
-
-// YAML
-#include <yaml-cpp/yaml.h>
-
-// Boost
-#include <boost/program_options.hpp>
 
 // db-CBS robot dynamics
 #include "../db-CBS/src/robots.h"
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
-namespace po = boost::program_options;
 
 // ============================================================================
 // CompoundStatePropagator - propagates each robot independently
@@ -184,328 +178,239 @@ private:
 };
 
 // ============================================================================
-// Main function
+// CoupledRRTPlanner Implementation
 // ============================================================================
 
-int main(int argc, char** argv)
+CoupledRRTPlanner::CoupledRRTPlanner(const CoupledRRTConfig& config)
+    : config_(config), position_bounds_(2)
 {
-    // Parse command line arguments
-    std::string inputFile;
-    std::string outputFile;
-    std::string configFile;
-    double timelimit = 60.0;
-    double goal_threshold = 0.5;
-    int min_control_duration = 1;
-    int max_control_duration = 10;
+}
 
-    po::options_description desc("Allowed options");
-    desc.add_options()
-        ("help,h", "Show help message")
-        ("input,i", po::value<std::string>(&inputFile)->required(), "Input YAML file")
-        ("output,o", po::value<std::string>(&outputFile)->required(), "Output YAML file")
-        ("cfg,c", po::value<std::string>(&configFile), "Configuration YAML file")
-        ("timelimit,t", po::value<double>(&timelimit)->default_value(60.0), "Time limit in seconds");
+CoupledRRTPlanner::~CoupledRRTPlanner()
+{
+    cleanup();
+}
 
-    po::variables_map vm;
-    try {
-        po::store(po::parse_command_line(argc, argv, desc), vm);
+void CoupledRRTPlanner::cleanup()
+{
+    // Clean up obstacle collision objects
+    for (auto* co : obstacles_) {
+        delete co;
+    }
+    obstacles_.clear();
 
-        if (vm.count("help")) {
-            std::cout << desc << std::endl;
-            return 0;
+    // Clean up start/goal states
+    if (!start_states_.empty() && !robots_.empty()) {
+        for (size_t i = 0; i < start_states_.size(); ++i) {
+            if (start_states_[i] && i < robots_.size()) {
+                robots_[i]->getSpaceInformation()->getStateSpace()->freeState(start_states_[i]);
+            }
         }
-
-        po::notify(vm);
-    } catch (const po::error& e) {
-        std::cerr << "ERROR: " << e.what() << std::endl;
-        std::cout << desc << std::endl;
-        return 1;
+        start_states_.clear();
     }
 
-    // Load configuration file if provided
-    if (vm.count("cfg")) {
-        try {
-            YAML::Node cfg = YAML::LoadFile(configFile);
-            if (cfg["goal_threshold"]) {
-                goal_threshold = cfg["goal_threshold"].as<double>();
+    if (!goal_states_.empty() && !robots_.empty()) {
+        for (size_t i = 0; i < goal_states_.size(); ++i) {
+            if (goal_states_[i] && i < robots_.size()) {
+                robots_[i]->getSpaceInformation()->getStateSpace()->freeState(goal_states_[i]);
             }
-            if (cfg["min_control_duration"]) {
-                min_control_duration = cfg["min_control_duration"].as<int>();
-            }
-            if (cfg["max_control_duration"]) {
-                max_control_duration = cfg["max_control_duration"].as<int>();
-            }
-        } catch (const YAML::Exception& e) {
-            std::cerr << "ERROR loading config file: " << e.what() << std::endl;
-            return 1;
         }
+        goal_states_.clear();
     }
 
-    // Load YAML configuration
-    std::cout << "Loading YAML file: " << inputFile << std::endl;
-    YAML::Node env;
-    try {
-        env = YAML::LoadFile(inputFile);
-    } catch (const YAML::Exception& e) {
-        std::cerr << "ERROR loading YAML file: " << e.what() << std::endl;
-        return 1;
-    }
-    std::cout << "YAML loaded successfully" << std::endl;
+    // Clear other state
+    robots_.clear();
+    col_mng_environment_.reset();
+    compound_state_space_.reset();
+    compound_control_space_.reset();
+    compound_si_.reset();
+    pdef_.reset();
+}
 
-    // Parse environment bounds
-    const auto& env_min = env["environment"]["min"];
-    const auto& env_max = env["environment"]["max"];
-
-    ob::RealVectorBounds position_bounds(2);
-    position_bounds.setLow(0, env_min[0].as<double>());
-    position_bounds.setLow(1, env_min[1].as<double>());
-    position_bounds.setHigh(0, env_max[0].as<double>());
-    position_bounds.setHigh(1, env_max[1].as<double>());
+void CoupledRRTPlanner::setupEnvironment(const PlanningProblem& problem)
+{
+    // Set up position bounds
+    position_bounds_.setLow(0, problem.env_min[0]);
+    position_bounds_.setLow(1, problem.env_min[1]);
+    position_bounds_.setHigh(0, problem.env_max[0]);
+    position_bounds_.setHigh(1, problem.env_max[1]);
 
     // Create FCL collision manager for obstacles
-    auto col_mng_environment = std::make_shared<fcl::DynamicAABBTreeCollisionManagerf>();
-    std::vector<fcl::CollisionObjectf*> obstacles;
+    col_mng_environment_ = std::make_shared<fcl::DynamicAABBTreeCollisionManagerf>();
 
-    if (env["environment"]["obstacles"]) {
-        for (const auto& obs : env["environment"]["obstacles"]) {
-            if (obs["type"].as<std::string>() == "box") {
-                const auto& size = obs["size"];
-                const auto& center = obs["center"];
+    for (const auto& obs : problem.obstacles) {
+        if (obs.type == "box") {
+            auto box = std::make_shared<fcl::Boxf>(
+                obs.size[0],
+                obs.size[1],
+                1.0f);
 
-                auto box = std::make_shared<fcl::Boxf>(
-                    size[0].as<float>(),
-                    size[1].as<float>(),
-                    1.0f);
+            auto* co = new fcl::CollisionObjectf(box);
+            co->setTranslation(fcl::Vector3f(
+                obs.center[0],
+                obs.center[1],
+                0.0f));
+            co->computeAABB();
 
-                auto* co = new fcl::CollisionObjectf(box);
-                co->setTranslation(fcl::Vector3f(
-                    center[0].as<float>(),
-                    center[1].as<float>(),
-                    0.0f));
-                co->computeAABB();
-
-                obstacles.push_back(co);
-                col_mng_environment->registerObject(co);
-            }
+            obstacles_.push_back(co);
+            col_mng_environment_->registerObject(co);
         }
-        col_mng_environment->setup();
     }
 
-    // Create robots from YAML
-    std::cout << "Creating robots..." << std::endl;
-    std::vector<std::shared_ptr<Robot>> robots;
-    std::vector<ob::State*> start_states;
-    std::vector<ob::State*> goal_states;
+    if (!obstacles_.empty()) {
+        col_mng_environment_->setup();
+    }
+}
 
-    for (const auto& robot_node : env["robots"]) {
-        auto robotType = robot_node["type"].as<std::string>();
-        std::cout << "  Creating robot of type: " << robotType << std::endl;
-        auto robot = create_robot(robotType, position_bounds);
-        std::cout << "  Robot created" << std::endl;
-        robots.push_back(robot);
+void CoupledRRTPlanner::setupRobots(const PlanningProblem& problem)
+{
+    for (const auto& robot_spec : problem.robots) {
+        // Create robot
+        auto robot = create_robot(robot_spec.type, position_bounds_);
+        robots_.push_back(robot);
 
         // Get robot's space information
-        std::cout << "  Getting robot space information..." << std::endl;
         auto robot_si = robot->getSpaceInformation();
         auto robot_state_space = robot_si->getStateSpace();
-        std::cout << "  Robot state space dimension: " << robot_state_space->getDimension() << std::endl;
 
         // Parse start state
-        std::cout << "  Parsing start state..." << std::endl;
-        const auto& start_vec = robot_node["start"];
         auto start_state = robot_state_space->allocState();
-
-        // Manually set state values based on robot type
-        // For now, assume all robots use SE2 state space (x, y, theta)
-        // TODO: Handle other robot types if needed
         auto start_se2 = start_state->as<ob::SE2StateSpace::StateType>();
-        start_se2->setX(start_vec[0].as<double>());
-        start_se2->setY(start_vec[1].as<double>());
-        start_se2->setYaw(start_vec.size() > 2 ? start_vec[2].as<double>() : 0.0);
-        start_states.push_back(start_state);
+        start_se2->setX(robot_spec.start[0]);
+        start_se2->setY(robot_spec.start[1]);
+        start_se2->setYaw(robot_spec.start.size() > 2 ? robot_spec.start[2] : 0.0);
+        start_states_.push_back(start_state);
 
         // Parse goal state
-        std::cout << "  Parsing goal state..." << std::endl;
-        const auto& goal_vec = robot_node["goal"];
         auto goal_state = robot_state_space->allocState();
-
-        // Manually set state values based on robot type
         auto goal_se2 = goal_state->as<ob::SE2StateSpace::StateType>();
-        goal_se2->setX(goal_vec[0].as<double>());
-        goal_se2->setY(goal_vec[1].as<double>());
-        goal_se2->setYaw(goal_vec.size() > 2 ? goal_vec[2].as<double>() : 0.0);
-        goal_states.push_back(goal_state);
+        goal_se2->setX(robot_spec.goal[0]);
+        goal_se2->setY(robot_spec.goal[1]);
+        goal_se2->setYaw(robot_spec.goal.size() > 2 ? robot_spec.goal[2] : 0.0);
+        goal_states_.push_back(goal_state);
     }
+}
 
-    const int num_robots = robots.size();
-    std::cout << "Planning for " << num_robots << " robots" << std::endl;
-
+void CoupledRRTPlanner::setupCompoundSpaces()
+{
     // Create compound state space
-    auto compound_state_space = std::make_shared<ob::CompoundStateSpace>();
-    for (auto& robot : robots) {
-        compound_state_space->addSubspace(
+    compound_state_space_ = std::make_shared<ob::CompoundStateSpace>();
+    for (auto& robot : robots_) {
+        compound_state_space_->addSubspace(
             robot->getSpaceInformation()->getStateSpace(), 1.0);
     }
 
     // Create compound control space
-    auto compound_control_space = std::make_shared<oc::CompoundControlSpace>(compound_state_space);
-    for (auto& robot : robots) {
-        compound_control_space->addSubspace(
+    compound_control_space_ = std::make_shared<oc::CompoundControlSpace>(compound_state_space_);
+    for (auto& robot : robots_) {
+        compound_control_space_->addSubspace(
             robot->getSpaceInformation()->getControlSpace());
     }
 
     // Create compound SpaceInformation
-    auto compound_si = std::make_shared<oc::SpaceInformation>(
-        compound_state_space, compound_control_space);
+    compound_si_ = std::make_shared<oc::SpaceInformation>(
+        compound_state_space_, compound_control_space_);
 
     // Set state propagator
-    auto propagator = std::make_shared<CompoundStatePropagator>(compound_si, robots);
-    compound_si->setStatePropagator(propagator);
+    auto propagator = std::make_shared<CompoundStatePropagator>(compound_si_, robots_);
+    compound_si_->setStatePropagator(propagator);
 
     // Set state validity checker
     auto validity_checker = std::make_shared<CompoundStateValidityChecker>(
-        compound_si, col_mng_environment, robots);
-    compound_si->setStateValidityChecker(validity_checker);
+        compound_si_, col_mng_environment_, robots_);
+    compound_si_->setStateValidityChecker(validity_checker);
 
     // Set propagation step size (use minimum dt from all robots)
-    double min_dt = robots[0]->dt();
-    for (auto& robot : robots) {
-        min_dt = std::min((double)min_dt, (double)robot->dt());
+    double min_dt = robots_[0]->dt();
+    for (auto& robot : robots_) {
+        min_dt = std::min(static_cast<double>(min_dt), static_cast<double>(robot->dt()));
     }
-    compound_si->setPropagationStepSize(min_dt);
-    compound_si->setMinMaxControlDuration(min_control_duration, max_control_duration);
+    compound_si_->setPropagationStepSize(min_dt);
+    compound_si_->setMinMaxControlDuration(
+        config_.min_control_duration,
+        config_.max_control_duration);
 
     // Setup SpaceInformation
-    compound_si->setup();
+    compound_si_->setup();
+}
 
-    std::cout << "State space dimension: " << compound_state_space->getDimension() << std::endl;
-    std::cout << "Control space dimension: " << compound_control_space->getDimension() << std::endl;
-    std::cout << "Propagation step size: " << min_dt << std::endl;
-
+void CoupledRRTPlanner::setupProblemDefinition()
+{
     // Create problem definition
-    auto pdef = std::make_shared<ob::ProblemDefinition>(compound_si);
+    pdef_ = std::make_shared<ob::ProblemDefinition>(compound_si_);
 
     // Combine individual start states into compound start
-    auto compound_start = compound_si->allocState();
+    auto compound_start = compound_si_->allocState();
     auto cs = compound_start->as<ob::CompoundState>();
-    for (size_t i = 0; i < robots.size(); ++i) {
-        auto individual_space = robots[i]->getSpaceInformation()->getStateSpace();
-        individual_space->copyState(cs->components[i], start_states[i]);
+    for (size_t i = 0; i < robots_.size(); ++i) {
+        auto individual_space = robots_[i]->getSpaceInformation()->getStateSpace();
+        individual_space->copyState(cs->components[i], start_states_[i]);
     }
-    pdef->addStartState(compound_start);
+    pdef_->addStartState(compound_start);
 
     // Combine individual goal states into compound goal
-    auto compound_goal = compound_si->allocState();
+    auto compound_goal = compound_si_->allocState();
     auto cg = compound_goal->as<ob::CompoundState>();
-    for (size_t i = 0; i < robots.size(); ++i) {
-        auto individual_space = robots[i]->getSpaceInformation()->getStateSpace();
-        individual_space->copyState(cg->components[i], goal_states[i]);
+    for (size_t i = 0; i < robots_.size(); ++i) {
+        auto individual_space = robots_[i]->getSpaceInformation()->getStateSpace();
+        individual_space->copyState(cg->components[i], goal_states_[i]);
     }
-    auto goal = std::make_shared<MultiRobotGoalState>(compound_si);
+    auto goal = std::make_shared<MultiRobotGoalState>(compound_si_);
     goal->setState(compound_goal);
-    goal->setThreshold(goal_threshold);
-    pdef->setGoal(goal);
+    goal->setThreshold(config_.goal_threshold);
+    pdef_->setGoal(goal);
+}
 
-    // Create planner
-    auto planner = std::make_shared<oc::RRT>(compound_si);
-    planner->setProblemDefinition(pdef);
-    planner->setup();
+PlanningResult CoupledRRTPlanner::plan(const PlanningProblem& problem)
+{
+    // Clean up any previous planning state
+    cleanup();
 
-    std::cout << "Planner configured. Starting search..." << std::endl;
+    PlanningResult result;
+    result.solved = false;
+    result.planning_time = 0.0;
 
-    // Solve
-    auto start_time = std::chrono::steady_clock::now();
-    ob::PlannerTerminationCondition ptc = ob::timedPlannerTerminationCondition(timelimit);
-    ob::PlannerStatus solved = planner->solve(ptc);
-    auto end_time = std::chrono::steady_clock::now();
-    double planning_time = std::chrono::duration<double>(end_time - start_time).count();
-
-    std::cout << "Planning completed in " << planning_time << " seconds" << std::endl;
-    std::cout << "Planner status: " << solved.asString() << std::endl;
-
-    // Write output
-    YAML::Node output;
-    bool is_exact = (solved.asString() == "Exact solution");
-    output["solved"] = is_exact;
-    output["planning_time"] = planning_time;
-
-    if (is_exact) {
-        std::cout << "Exact solution found! Extracting path..." << std::endl;
-
-        // Get solution path
-        auto path = pdef->getSolutionPath()->as<oc::PathControl>();
-
-        // Interpolate to uniform time steps
-        path->interpolate();
-
-        std::cout << "Path has " << path->getStateCount() << " states and "
-                  << path->getControlCount() << " controls" << std::endl;
-
-        // Extract states and controls for each robot
-        YAML::Node result;
-        for (int r = 0; r < num_robots; ++r) {
-            YAML::Node robot_data;
-
-            // Extract states
-            YAML::Node states_node;
-            for (size_t i = 0; i < path->getStateCount(); ++i) {
-                auto compound = path->getState(i)->as<ob::CompoundState>();
-                auto robot_state = compound->components[r];
-
-                auto robot_space = robots[r]->getSpaceInformation()->getStateSpace();
-                std::vector<double> state_vals(robot_space->getDimension());
-                robot_space->copyToReals(state_vals, robot_state);
-
-                YAML::Node state_node;
-                for (double val : state_vals) {
-                    state_node.push_back(val);
-                }
-                states_node.push_back(state_node);
-            }
-            robot_data["states"] = states_node;
-
-            // Extract controls
-            YAML::Node actions_node;
-            for (size_t i = 0; i < path->getControlCount(); ++i) {
-                auto compound_control = path->getControl(i)->as<oc::CompoundControl>();
-                auto robot_control = compound_control->components[r];
-
-                auto robot_control_space = robots[r]->getSpaceInformation()->getControlSpace();
-                const size_t dim = robot_control_space->getDimension();
-
-                YAML::Node action_node;
-                for (size_t d = 0; d < dim; ++d) {
-                    double* address = robot_control_space->getValueAddressAtIndex(robot_control, d);
-                    action_node.push_back(*address);
-                }
-                actions_node.push_back(action_node);
-            }
-            robot_data["actions"] = actions_node;
-
-            result.push_back(robot_data);
-        }
-        output["result"] = result;
-
-        std::cout << "Solution extracted successfully" << std::endl;
-    } else {
-        std::cout << "No solution found (status: " << solved.asString() << ")" << std::endl;
-    }
-
-    // Write output file
     try {
-        std::ofstream fout(outputFile);
-        fout << output;
-        fout.close();
-        std::cout << "Output written to " << outputFile << std::endl;
+        // Setup environment
+        setupEnvironment(problem);
+
+        // Setup robots
+        setupRobots(problem);
+
+        // Setup compound spaces
+        setupCompoundSpaces();
+
+        // Setup problem definition
+        setupProblemDefinition();
+
+        // Create planner
+        auto planner = std::make_shared<oc::RRT>(compound_si_);
+        planner->setProblemDefinition(pdef_);
+        planner->setup();
+
+        // Solve
+        auto start_time = std::chrono::steady_clock::now();
+        ob::PlannerTerminationCondition ptc = ob::timedPlannerTerminationCondition(config_.time_limit);
+        ob::PlannerStatus solved = planner->solve(ptc);
+        auto end_time = std::chrono::steady_clock::now();
+
+        result.planning_time = std::chrono::duration<double>(end_time - start_time).count();
+        result.solved = (solved.asString() == "Exact solution");
+
+        if (result.solved) {
+            // Get solution path
+            auto path = pdef_->getSolutionPath()->as<oc::PathControl>();
+
+            // Interpolate to uniform time steps
+            path->interpolate();
+
+            result.path = std::make_shared<oc::PathControl>(*path);
+        }
+
     } catch (const std::exception& e) {
-        std::cerr << "ERROR writing output file: " << e.what() << std::endl;
-        return 1;
+        std::cerr << "Planning failed with exception: " << e.what() << std::endl;
+        result.solved = false;
     }
 
-    // Cleanup
-    for (auto* co : obstacles) {
-        delete co;
-    }
-
-    return 0;
+    return result;
 }

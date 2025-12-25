@@ -84,6 +84,7 @@ target_include_directories(srrt PUBLIC
 
 add_executable(coupled_rrt
   src/coupled_rrt.cpp
+  src/coupled_rrt_main.cpp
 )
 target_link_libraries(coupled_rrt
   motion_planning_common
