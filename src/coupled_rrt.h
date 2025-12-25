@@ -33,17 +33,11 @@ struct RobotSpec {
     std::vector<double> goal;      // Goal state [x, y, theta, ...]
 };
 
-struct ObstacleSpec {
-    std::string type;              // Obstacle type (e.g., "box")
-    std::vector<double> size;      // Size parameters
-    std::vector<double> center;    // Center position
-};
-
 struct PlanningProblem {
     std::vector<double> env_min;   // Environment bounds minimum [x_min, y_min]
     std::vector<double> env_max;   // Environment bounds maximum [x_max, y_max]
     std::vector<RobotSpec> robots; // Robot specifications
-    std::vector<ObstacleSpec> obstacles; // Obstacle specifications
+    std::vector<fcl::CollisionObjectf*> obstacles; // FCL collision objects for obstacles
 };
 
 // ============================================================================

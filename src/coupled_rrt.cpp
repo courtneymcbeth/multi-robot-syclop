@@ -193,10 +193,7 @@ CoupledRRTPlanner::~CoupledRRTPlanner()
 
 void CoupledRRTPlanner::cleanup()
 {
-    // Clean up obstacle collision objects
-    for (auto* co : obstacles_) {
-        delete co;
-    }
+    // Note: We don't delete obstacle objects since they're owned by the caller
     obstacles_.clear();
 
     // Clean up start/goal states
@@ -235,29 +232,14 @@ void CoupledRRTPlanner::setupEnvironment(const PlanningProblem& problem)
     position_bounds_.setHigh(0, problem.env_max[0]);
     position_bounds_.setHigh(1, problem.env_max[1]);
 
-    // Create FCL collision manager for obstacles
+    // Create FCL collision manager and register existing obstacle objects
     col_mng_environment_ = std::make_shared<fcl::DynamicAABBTreeCollisionManagerf>();
 
-    for (const auto& obs : problem.obstacles) {
-        if (obs.type == "box") {
-            auto box = std::make_shared<fcl::Boxf>(
-                obs.size[0],
-                obs.size[1],
-                1.0f);
-
-            auto* co = new fcl::CollisionObjectf(box);
-            co->setTranslation(fcl::Vector3f(
-                obs.center[0],
-                obs.center[1],
-                0.0f));
-            co->computeAABB();
-
-            obstacles_.push_back(co);
-            col_mng_environment_->registerObject(co);
-        }
+    for (auto* obstacle : problem.obstacles) {
+        col_mng_environment_->registerObject(obstacle);
     }
 
-    if (!obstacles_.empty()) {
+    if (!problem.obstacles.empty()) {
         col_mng_environment_->setup();
     }
 }

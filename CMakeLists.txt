@@ -45,7 +45,7 @@ include_directories(
 # set_property(TARGET motion_planning_common PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 
-## kcbs
+## mr_syclop
 
 add_executable(mr_syclop
   src/mr_syclop.cpp
@@ -53,12 +53,14 @@ add_executable(mr_syclop
 )
 target_link_libraries(mr_syclop
   motion_planning_common
+  coupled_rrt_lib
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
   ompl
   ${FCL_LIBRARIES}
 )
 target_include_directories(mr_syclop PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
   ${YAML_INCLUDE_DIRS}
   ${FCL_INCLUDE_DIRS}
 )
@@ -80,21 +82,32 @@ target_include_directories(srrt PUBLIC
   ${YAML_INCLUDE_DIRS}
 )
 
-## coupled_rrt
+## coupled_rrt library and executable
 
-add_executable(coupled_rrt
+# Create library for coupled RRT implementation (can be used by other targets)
+add_library(coupled_rrt_lib
   src/coupled_rrt.cpp
+)
+target_link_libraries(coupled_rrt_lib
+  PUBLIC motion_planning_common
+  PUBLIC ompl
+  PUBLIC ${FCL_LIBRARIES}
+)
+target_include_directories(coupled_rrt_lib PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${FCL_INCLUDE_DIRS}
+)
+
+# Executable that uses the library
+add_executable(coupled_rrt
   src/coupled_rrt_main.cpp
 )
 target_link_libraries(coupled_rrt
-  motion_planning_common
-  ompl
-  ${FCL_LIBRARIES}
+  coupled_rrt_lib
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
 )
 target_include_directories(coupled_rrt PUBLIC
-  ${FCL_INCLUDE_DIRS}
   ${YAML_INCLUDE_DIRS}
 )
 

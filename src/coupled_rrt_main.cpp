@@ -26,7 +26,7 @@ namespace ob = ompl::base;
 // Helper Functions for YAML Conversion
 // ============================================================================
 
-PlanningProblem loadProblemFromYAML(const std::string& inputFile)
+PlanningProblem loadProblemFromYAML(const std::string& inputFile, std::vector<fcl::CollisionObjectf*>& obstacle_objects)
 {
     std::cout << "Loading YAML file: " << inputFile << std::endl;
     YAML::Node env = YAML::LoadFile(inputFile);
@@ -40,20 +40,27 @@ PlanningProblem loadProblemFromYAML(const std::string& inputFile)
     problem.env_min = {env_min[0].as<double>(), env_min[1].as<double>()};
     problem.env_max = {env_max[0].as<double>(), env_max[1].as<double>()};
 
-    // Parse obstacles
+    // Parse obstacles and create FCL objects
     if (env["environment"]["obstacles"]) {
         for (const auto& obs : env["environment"]["obstacles"]) {
-            ObstacleSpec obstacle;
-            obstacle.type = obs["type"].as<std::string>();
-
-            if (obstacle.type == "box") {
+            if (obs["type"].as<std::string>() == "box") {
                 const auto& size = obs["size"];
-                obstacle.size = {size[0].as<double>(), size[1].as<double>()};
-
                 const auto& center = obs["center"];
-                obstacle.center = {center[0].as<double>(), center[1].as<double>()};
 
-                problem.obstacles.push_back(obstacle);
+                auto box = std::make_shared<fcl::Boxf>(
+                    size[0].as<float>(),
+                    size[1].as<float>(),
+                    1.0f);
+
+                auto* co = new fcl::CollisionObjectf(box);
+                co->setTranslation(fcl::Vector3f(
+                    center[0].as<float>(),
+                    center[1].as<float>(),
+                    0.0f));
+                co->computeAABB();
+
+                obstacle_objects.push_back(co);
+                problem.obstacles.push_back(co);
             }
         }
     }
@@ -225,6 +232,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // Vector to hold obstacle objects for cleanup
+    std::vector<fcl::CollisionObjectf*> obstacle_objects;
+
     try {
         // Load configuration
         CoupledRRTConfig config;
@@ -236,7 +246,7 @@ int main(int argc, char** argv)
         }
 
         // Load problem from YAML
-        PlanningProblem problem = loadProblemFromYAML(inputFile);
+        PlanningProblem problem = loadProblemFromYAML(inputFile, obstacle_objects);
 
         // Create planner
         CoupledRRTPlanner planner(config);
@@ -253,7 +263,18 @@ int main(int argc, char** argv)
 
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << std::endl;
+
+        // Clean up obstacles
+        for (auto* co : obstacle_objects) {
+            delete co;
+        }
+
         return 1;
+    }
+
+    // Clean up obstacles
+    for (auto* co : obstacle_objects) {
+        delete co;
     }
 
     return 0;
