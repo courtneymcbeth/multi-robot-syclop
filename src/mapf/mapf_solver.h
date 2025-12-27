@@ -22,6 +22,9 @@ public:
     virtual std::string getName() const = 0;
 };
 
-std::unique_ptr<MAPFSolver> createMAPFSolver(const std::string& method);
+std::unique_ptr<MAPFSolver> createMAPFSolver(
+    const std::string& method,
+    int region_capacity = 1,
+    double timeout = 60.0);
 
 #endif // MAPF_SOLVER_H

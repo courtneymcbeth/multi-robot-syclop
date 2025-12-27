@@ -50,6 +50,7 @@ include_directories(
 add_library(mapf_solver_lib
   src/mapf/mapf_solver.cpp
   src/mapf/mapf_decoupled.cpp
+  src/mapf/mapf_cbs.cpp
 )
 target_link_libraries(mapf_solver_lib
   PUBLIC ompl

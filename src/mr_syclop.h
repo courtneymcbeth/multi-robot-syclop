@@ -19,9 +19,17 @@ namespace oc = ompl::control;
 // Configuration Structure
 // ============================================================================
 
+struct MAPFConfig {
+    std::string method = "decoupled";  // Options: "decoupled", "astar", "cbs"
+    int region_capacity = 1;           // Robots per vertex/edge (for CBS)
+};
+
 struct MRSyCLoPConfig {
     int decomposition_region_length = 1;
     double planning_time_limit = 60.0;
+
+    // MAPF configuration
+    MAPFConfig mapf_config;
 
     // Coupled RRT config for composite planner
     CoupledRRTConfig coupled_rrt_config;

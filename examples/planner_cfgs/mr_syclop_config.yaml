@@ -2,3 +2,8 @@
 
 # Decomposition region length
 decomposition_region_length: 5
+
+# MAPF Configuration
+mapf:
+  method: "cbs"           # Options: "decoupled", "astar", "cbs"
+  region_capacity: 2      # Maximum robots per region (vertex/edge)

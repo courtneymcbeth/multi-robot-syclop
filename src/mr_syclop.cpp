@@ -155,10 +155,10 @@ void MRSyCLoPPlanner::computeHighLevelPaths()
     std::cout << "Computing high-level paths..." << std::endl;
 #endif
 
-    auto mapf_solver = createMAPFSolver("decoupled");
-    if (!mapf_solver) {
-        throw std::runtime_error("Failed to create MAPF solver");
-    }
+    auto mapf_solver = createMAPFSolver(
+        config_.mapf_config.method,
+        config_.mapf_config.region_capacity,
+        config_.planning_time_limit);
 
     high_level_paths_ = mapf_solver->solve(decomp_, start_states_, goal_states_);
 
@@ -396,12 +396,25 @@ int main(int argc, char* argv[]) {
 
         MRSyCLoPConfig config;
         config.decomposition_region_length = cfg["decomposition_region_length"].as<int>();
+
+        // Load MAPF configuration
+        if (cfg["mapf"]) {
+            if (cfg["mapf"]["method"]) {
+                config.mapf_config.method = cfg["mapf"]["method"].as<std::string>();
+            }
+            if (cfg["mapf"]["region_capacity"]) {
+                config.mapf_config.region_capacity = cfg["mapf"]["region_capacity"].as<int>();
+            }
+        }
+
         // Set coupled RRT config if needed
         config.coupled_rrt_config.goal_threshold = 0.5;
         config.coupled_rrt_config.min_control_duration = 1;
         config.coupled_rrt_config.max_control_duration = 10;
 
         std::cout << "  Decomposition region length: " << config.decomposition_region_length << std::endl;
+        std::cout << "  MAPF method: " << config.mapf_config.method << std::endl;
+        std::cout << "  MAPF region capacity: " << config.mapf_config.region_capacity << std::endl;
 
         // Load problem description
         std::cout << "Loading problem description..." << std::endl;
