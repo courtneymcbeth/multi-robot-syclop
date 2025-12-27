@@ -45,6 +45,23 @@ include_directories(
 # set_property(TARGET motion_planning_common PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 
+## mapf_solver library
+
+add_library(mapf_solver_lib
+  src/mapf/mapf_solver.cpp
+  src/mapf/mapf_decoupled.cpp
+)
+target_link_libraries(mapf_solver_lib
+  PUBLIC ompl
+  PUBLIC ${Boost_LIBRARIES}
+)
+target_include_directories(mapf_solver_lib PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
+  ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
+)
+
+
 ## mr_syclop
 
 add_executable(mr_syclop
@@ -54,6 +71,7 @@ add_executable(mr_syclop
 target_link_libraries(mr_syclop
   motion_planning_common
   coupled_rrt_lib
+  mapf_solver_lib
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
   ompl

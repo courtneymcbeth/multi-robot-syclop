@@ -7,124 +7,15 @@
 #include <algorithm>
 #include <chrono>
 #include <boost/heap/d_ary_heap.hpp>
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/astar_search.hpp>
 
 #include "robotStatePropagator.hpp"
 #include "fclStateValidityChecker.hpp"
+#include "mapf/mapf_solver.h"
 
 #define DBG_PRINTS
 #include "db_astar.hpp"
 #include "planresult.hpp"
 #include "dynoplan/optimization/multirobot_optimization.hpp"
-
-// ============================================================================
-// Helper structures for A* search over decomposition
-// ============================================================================
-
-struct EdgeProperty {
-    double weight;
-};
-
-using RegionGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
-                                          boost::no_property, EdgeProperty>;
-using Vertex = boost::graph_traits<RegionGraph>::vertex_descriptor;
-
-struct found_goal {};
-
-class GoalVisitor : public boost::default_astar_visitor {
-public:
-    GoalVisitor(int goal) : goal_region(goal) {}
-
-    void examine_vertex(Vertex v, const RegionGraph& /*g*/) {
-        if (static_cast<int>(v) == goal_region) {
-            throw found_goal();
-        }
-    }
-
-private:
-    int goal_region;
-};
-
-class SimpleHeuristic : public boost::astar_heuristic<RegionGraph, double> {
-public:
-    SimpleHeuristic() {}
-
-    double operator()(Vertex /*v*/) {
-        return 0.0; // Uniform heuristic (admissible, reduces to Dijkstra's)
-    }
-};
-
-// ============================================================================
-// Helper function for high-level path computation
-// ============================================================================
-
-void compute_high_level_paths_internal(
-    oc::DecompositionPtr decomp,
-    const std::vector<ob::State*>& start_states,
-    const std::vector<ob::State*>& goal_states,
-    std::vector<std::vector<int>>& high_level_paths)
-{
-    high_level_paths.clear();
-    high_level_paths.resize(start_states.size());
-
-    // Build the region graph from the decomposition
-    int num_regions = decomp->getNumRegions();
-    RegionGraph graph(num_regions);
-
-    // Add edges with uniform weight 1
-    for (int i = 0; i < num_regions; ++i) {
-        std::vector<int> neighbors;
-        decomp->getNeighbors(i, neighbors);
-        for (int neighbor : neighbors) {
-            auto edge = boost::add_edge(i, neighbor, graph);
-            graph[edge.first].weight = 1.0;
-        }
-    }
-
-    // Iterate over each robot
-    for (size_t robot_idx = 0; robot_idx < start_states.size(); ++robot_idx) {
-        // Get the region IDs for the start and goal states
-        int start_region = decomp->locateRegion(start_states[robot_idx]);
-        int goal_region = decomp->locateRegion(goal_states[robot_idx]);
-
-        if (start_region == goal_region) {
-            high_level_paths[robot_idx].push_back(start_region);
-            continue;
-        }
-
-        // Run A* algorithm to find the high-level path
-        std::vector<Vertex> parents(num_regions);
-        std::vector<double> distances(num_regions);
-
-        try {
-            boost::astar_search(graph, boost::vertex(start_region, graph),
-                                SimpleHeuristic(),
-                                boost::weight_map(boost::get(&EdgeProperty::weight, graph))
-                                    .distance_map(boost::make_iterator_property_map(distances.begin(),
-                                                                                    boost::get(boost::vertex_index, graph)))
-                                    .predecessor_map(boost::make_iterator_property_map(parents.begin(),
-                                                                                        boost::get(boost::vertex_index, graph)))
-                                    .visitor(GoalVisitor(goal_region)));
-        } catch (found_goal) {
-            // Reconstruct the path from start to goal
-            int region = goal_region;
-            int path_length = 1;
-
-            while (region != start_region) {
-                region = parents[region];
-                ++path_length;
-            }
-
-            high_level_paths[robot_idx].resize(path_length);
-            region = goal_region;
-            for (int i = path_length - 1; i >= 0; --i) {
-                high_level_paths[robot_idx][i] = region;
-                region = parents[region];
-            }
-        }
-    }
-}
 
 // ============================================================================
 // MRSyCLoPPlanner Implementation
@@ -264,10 +155,16 @@ void MRSyCLoPPlanner::computeHighLevelPaths()
     std::cout << "Computing high-level paths..." << std::endl;
 #endif
 
-    compute_high_level_paths_internal(decomp_, start_states_, goal_states_, high_level_paths_);
+    auto mapf_solver = createMAPFSolver("decoupled");
+    if (!mapf_solver) {
+        throw std::runtime_error("Failed to create MAPF solver");
+    }
+
+    high_level_paths_ = mapf_solver->solve(decomp_, start_states_, goal_states_);
 
 #ifdef DBG_PRINTS
-    std::cout << "High-level paths computed:" << std::endl;
+    std::cout << "High-level paths computed using "
+              << mapf_solver->getName() << ":" << std::endl;
     for (size_t i = 0; i < high_level_paths_.size(); ++i) {
         std::cout << "  Robot " << i << ": ";
         for (int region : high_level_paths_[i]) {
