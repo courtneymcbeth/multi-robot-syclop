@@ -63,6 +63,24 @@ target_include_directories(mapf_solver_lib PUBLIC
 )
 
 
+## guided_planner library
+
+add_library(guided_planner
+  src/guided/guided_planner.cpp
+  src/guided/syclop_rrt_solver.cpp
+)
+target_link_libraries(guided_planner
+  PUBLIC ompl
+  PUBLIC ${FCL_LIBRARIES}
+  PUBLIC motion_planning_common
+)
+target_include_directories(guided_planner PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
+  ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
+  ${FCL_INCLUDE_DIRS}
+)
+
 ## mr_syclop
 
 add_executable(mr_syclop
@@ -73,6 +91,7 @@ target_link_libraries(mr_syclop
   motion_planning_common
   coupled_rrt_lib
   mapf_solver_lib
+  guided_planner
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
   ompl

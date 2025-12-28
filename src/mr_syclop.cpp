@@ -55,6 +55,8 @@ void MRSyCLoPPlanner::cleanup()
     // Clear other data (but don't delete obstacles - caller owns them)
     robots_.clear();
     high_level_paths_.clear();
+    guided_planning_results_.clear();
+    collision_manager_.reset();
     problem_loaded_ = false;
 }
 
@@ -83,8 +85,9 @@ void MRSyCLoPPlanner::loadProblem(
     workspace_bounds_.setHigh(0, env_max[0]);
     workspace_bounds_.setHigh(1, env_max[1]);
 
-    // Setup decomposition and robots
+    // Setup decomposition, collision manager, and robots
     setupDecomposition();
+    setupCollisionManager();
     setupRobots();
 
     problem_loaded_ = true;
@@ -106,6 +109,19 @@ void MRSyCLoPPlanner::setupDecomposition()
         config_.decomposition_region_length, 2, workspace_bounds_);
 #ifdef DBG_PRINTS
     std::cout << "  Decomposition created with " << decomp_->getNumRegions() << " regions" << std::endl;
+#endif
+}
+
+void MRSyCLoPPlanner::setupCollisionManager()
+{
+#ifdef DBG_PRINTS
+    std::cout << "Setting up collision manager..." << std::endl;
+#endif
+    collision_manager_ = std::make_shared<fcl::DynamicAABBTreeCollisionManagerf>();
+    collision_manager_->registerObjects(obstacles_);
+    collision_manager_->setup();
+#ifdef DBG_PRINTS
+    std::cout << "  Collision manager setup with " << obstacles_.size() << " obstacles" << std::endl;
 #endif
 }
 
@@ -175,16 +191,73 @@ void MRSyCLoPPlanner::computeHighLevelPaths()
 #endif
 }
 
-void MRSyCLoPPlanner::computeKinodynamicPaths()
+void MRSyCLoPPlanner::computeGuidedPaths()
 {
-    // TODO @imngui
-    std::cout << "Kinodynamic path computation is not implemented yet." << std::endl;
+    if (!problem_loaded_) {
+        throw std::runtime_error("Problem not loaded. Call loadProblem() first.");
+    }
+
+    if (high_level_paths_.empty()) {
+        throw std::runtime_error(
+            "High-level paths not computed. Call computeHighLevelPaths() first.");
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "Computing guided low-level paths using "
+              << config_.guided_planner_method << "..." << std::endl;
+#endif
+
+    // Create guided planner
+    auto guided_planner = createGuidedPlanner(
+        config_.guided_planner_method,
+        config_.guided_planner_config,
+        collision_manager_);
+
+    // Clear previous results
+    guided_planning_results_.clear();
+
+    // Plan for each robot independently
+    for (size_t i = 0; i < robots_.size(); ++i) {
+#ifdef DBG_PRINTS
+        std::cout << "Planning for robot " << i << "..." << std::endl;
+#endif
+
+        GuidedPlanningResult result = guided_planner->solve(
+            robots_[i],
+            decomp_,
+            start_states_[i],
+            goal_states_[i],
+            high_level_paths_[i],
+            i);
+
+        guided_planning_results_.push_back(result);
+
+#ifdef DBG_PRINTS
+        if (result.success) {
+            std::cout << "  Success! Planning time: "
+                      << result.planning_time << " seconds" << std::endl;
+        } else {
+            std::cout << "  Failed after " << result.planning_time
+                      << " seconds" << std::endl;
+        }
+#endif
+    }
+
+#ifdef DBG_PRINTS
+    size_t num_successful = 0;
+    for (const auto& result : guided_planning_results_) {
+        if (result.success) num_successful++;
+    }
+    std::cout << "Guided path computation completed: "
+              << num_successful << "/" << robots_.size()
+              << " robots found paths" << std::endl;
+#endif
 }
 
-void MRSyCLoPPlanner::segmentKinodynamicPaths()
+void MRSyCLoPPlanner::segmentGuidedPaths()
 {
     // TODO @imngui
-    std::cout << "Kinodynamic path segmentation is not implemented yet." << std::endl;
+    std::cout << "Guided path segmentation is not implemented yet." << std::endl;
 }
 
 bool MRSyCLoPPlanner::checkSegmentsForCollisions()
@@ -327,11 +400,11 @@ MRSyCLoPResult MRSyCLoPPlanner::plan()
         // Compute high-level paths over decomposition
         computeHighLevelPaths();
 
-        // Compute kinodynamic low-level paths
-        computeKinodynamicPaths();
+        // Compute guided low-level paths
+        computeGuidedPaths();
 
-        // Segment kinodynamic paths
-        segmentKinodynamicPaths();
+        // Segment guided paths
+        segmentGuidedPaths();
 
         // Check segments for collisions
         bool collisions_found = checkSegmentsForCollisions();

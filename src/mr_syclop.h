@@ -11,6 +11,7 @@
 #include "decomposition.h"
 #include "robots.h"
 #include "coupled_rrt.h"
+#include "guided/guided_planner.h"
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
@@ -33,6 +34,10 @@ struct MRSyCLoPConfig {
 
     // Coupled RRT config for composite planner
     CoupledRRTConfig coupled_rrt_config;
+
+    // Guided planner configuration
+    std::string guided_planner_method = "syclop_rrt";
+    GuidedPlannerConfig guided_planner_config;
 };
 
 // ============================================================================
@@ -71,14 +76,15 @@ public:
 
     // Individual planning phases (can be called separately if needed)
     void computeHighLevelPaths();
-    void computeKinodynamicPaths();
-    void segmentKinodynamicPaths();
+    void computeGuidedPaths();
+    void segmentGuidedPaths();
     bool checkSegmentsForCollisions();
     void resolveCollisions();
 
     // Accessors
     const std::vector<std::vector<int>>& getHighLevelPaths() const { return high_level_paths_; }
     const oc::DecompositionPtr& getDecomposition() const { return decomp_; }
+    const std::vector<GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
 
 private:
     // Configuration
@@ -101,10 +107,15 @@ private:
 
     // Planning state
     std::vector<std::vector<int>> high_level_paths_;
+    std::vector<GuidedPlanningResult> guided_planning_results_;
     bool problem_loaded_ = false;
+
+    // Collision manager for obstacles (shared with guided planners)
+    std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager_;
 
     // Helper methods
     void setupDecomposition();
+    void setupCollisionManager();
     void setupRobots();
     void cleanup();
     std::vector<fcl::CollisionObjectf*> getObstaclesInRegion(
