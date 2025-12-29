@@ -56,6 +56,7 @@ void MRSyCLoPPlanner::cleanup()
     robots_.clear();
     high_level_paths_.clear();
     guided_planning_results_.clear();
+    path_segments_.clear();
     collision_manager_.reset();
     problem_loaded_ = false;
 }
@@ -193,6 +194,8 @@ void MRSyCLoPPlanner::computeHighLevelPaths()
 
 void MRSyCLoPPlanner::computeGuidedPaths()
 {
+    /// @todo @imngui: Need to check if this is actually using the high level paths properly
+
     if (!problem_loaded_) {
         throw std::runtime_error("Problem not loaded. Call loadProblem() first.");
     }
@@ -256,8 +259,151 @@ void MRSyCLoPPlanner::computeGuidedPaths()
 
 void MRSyCLoPPlanner::segmentGuidedPaths()
 {
-    // TODO @imngui
-    std::cout << "Guided path segmentation is not implemented yet." << std::endl;
+    if (!problem_loaded_) {
+        throw std::runtime_error("Problem not loaded. Call loadProblem() first.");
+    }
+
+    if (guided_planning_results_.empty()) {
+        throw std::runtime_error(
+            "Guided paths not computed. Call computeGuidedPaths() first.");
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "Segmenting guided paths by timesteps (m="
+              << config_.segment_timesteps << ")..." << std::endl;
+#endif
+
+    // Clear previous segments
+    path_segments_.clear();
+    path_segments_.resize(robots_.size());
+
+    // Segment each robot's path
+    for (size_t robot_idx = 0; robot_idx < guided_planning_results_.size(); ++robot_idx) {
+        const auto& result = guided_planning_results_[robot_idx];
+
+        if (!result.success || !result.path) {
+#ifdef DBG_PRINTS
+            std::cout << "  Robot " << robot_idx << ": No path to segment (planning failed)" << std::endl;
+#endif
+            continue;
+        }
+
+        auto& path = result.path;
+        size_t num_controls = path->getControlCount();
+
+        if (num_controls == 0) {
+#ifdef DBG_PRINTS
+            std::cout << "  Robot " << robot_idx << ": Empty path" << std::endl;
+#endif
+            continue;
+        }
+
+#ifdef DBG_PRINTS
+        std::cout << "  Robot " << robot_idx << ": " << num_controls << " controls" << std::endl;
+#endif
+
+        // Segment the path
+        int current_timestep = 0;
+        size_t segment_idx = 0;
+        size_t control_idx = 0;
+        double remaining_control_duration = 0.0;  // Track partial control durations
+
+        while (control_idx < num_controls || remaining_control_duration > 0.0) {
+            PathSegment segment;
+            segment.robot_index = robot_idx;
+            segment.segment_index = segment_idx;
+            segment.start_timestep = current_timestep;
+
+            // Start state is the current state we're at
+            segment.start_state = path->getState(control_idx < num_controls ? control_idx : num_controls);
+            segment.total_duration = 0.0;
+
+            int timesteps_in_segment = 0;
+
+            // First, handle any remaining duration from previous control
+            if (remaining_control_duration > 0.0) {
+                int remaining_timesteps_from_prev = static_cast<int>(std::ceil(remaining_control_duration));
+
+                if (remaining_timesteps_from_prev <= config_.segment_timesteps) {
+                    // All remaining duration fits in this segment
+                    segment.controls.push_back(path->getControl(control_idx - 1));
+                    segment.control_durations.push_back(remaining_control_duration);
+                    segment.total_duration += remaining_control_duration;
+                    timesteps_in_segment += remaining_timesteps_from_prev;
+                    remaining_control_duration = 0.0;
+                } else {
+                    // Only part of remaining duration fits
+                    double partial_duration = config_.segment_timesteps;
+                    segment.controls.push_back(path->getControl(control_idx - 1));
+                    segment.control_durations.push_back(partial_duration);
+                    segment.total_duration += partial_duration;
+                    timesteps_in_segment += config_.segment_timesteps;
+                    remaining_control_duration -= partial_duration;
+                }
+            }
+
+            // Accumulate controls until we reach segment_timesteps
+            while (control_idx < num_controls && timesteps_in_segment < config_.segment_timesteps) {
+                double control_duration = path->getControlDuration(control_idx);
+                int control_timesteps = static_cast<int>(std::ceil(control_duration));
+
+                int remaining_timesteps = config_.segment_timesteps - timesteps_in_segment;
+
+                if (control_timesteps <= remaining_timesteps) {
+                    // Entire control fits in this segment
+                    segment.controls.push_back(path->getControl(control_idx));
+                    segment.control_durations.push_back(control_duration);
+                    segment.total_duration += control_duration;
+                    timesteps_in_segment += control_timesteps;
+                    control_idx++;
+                } else {
+                    // Control needs to be split
+                    // Use only the portion that fits in this segment
+                    double partial_duration = remaining_timesteps;
+                    segment.controls.push_back(path->getControl(control_idx));
+                    segment.control_durations.push_back(partial_duration);
+                    segment.total_duration += partial_duration;
+                    timesteps_in_segment += remaining_timesteps;
+
+                    // Save the remaining duration for next segment
+                    remaining_control_duration = control_duration - partial_duration;
+                    control_idx++;
+                    break;
+                }
+            }
+
+            segment.end_timestep = current_timestep + timesteps_in_segment;
+            current_timestep = segment.end_timestep;
+
+            // Set end state (state we'll be at after this segment)
+            segment.end_state = path->getState(control_idx < num_controls ? control_idx : num_controls);
+
+            path_segments_[robot_idx].push_back(segment);
+            segment_idx++;
+        }
+
+#ifdef DBG_PRINTS
+        std::cout << "    Created " << path_segments_[robot_idx].size()
+                  << " segments for robot " << robot_idx << std::endl;
+
+        // Print detailed segment info
+        for (const auto& seg : path_segments_[robot_idx]) {
+            std::cout << "      Segment " << seg.segment_index
+                      << ": timesteps [" << seg.start_timestep << ", " << seg.end_timestep << "), "
+                      << seg.controls.size() << " controls, "
+                      << "total duration: " << seg.total_duration << std::endl;
+        }
+#endif
+    }
+
+#ifdef DBG_PRINTS
+    size_t total_segments = 0;
+    for (const auto& robot_segments : path_segments_) {
+        total_segments += robot_segments.size();
+    }
+    std::cout << "Path segmentation completed: " << total_segments
+              << " total segments across " << robots_.size() << " robots" << std::endl;
+#endif
 }
 
 bool MRSyCLoPPlanner::checkSegmentsForCollisions()
@@ -470,6 +616,11 @@ int main(int argc, char* argv[]) {
         MRSyCLoPConfig config;
         config.decomposition_region_length = cfg["decomposition_region_length"].as<int>();
 
+        // Load segmentation configuration
+        if (cfg["segment_timesteps"]) {
+            config.segment_timesteps = cfg["segment_timesteps"].as<int>();
+        }
+
         // Load MAPF configuration
         if (cfg["mapf"]) {
             if (cfg["mapf"]["method"]) {
@@ -486,6 +637,7 @@ int main(int argc, char* argv[]) {
         config.coupled_rrt_config.max_control_duration = 10;
 
         std::cout << "  Decomposition region length: " << config.decomposition_region_length << std::endl;
+        std::cout << "  Segment timesteps: " << config.segment_timesteps << std::endl;
         std::cout << "  MAPF method: " << config.mapf_config.method << std::endl;
         std::cout << "  MAPF region capacity: " << config.mapf_config.region_capacity << std::endl;
 

@@ -3,6 +3,9 @@
 # Decomposition region length
 decomposition_region_length: 5
 
+# Path segmentation configuration
+segment_timesteps: 30      # Number of timesteps per segment
+
 # MAPF Configuration
 mapf:
   method: "cbs"           # Options: "decoupled", "astar", "cbs"

@@ -38,6 +38,25 @@ struct MRSyCLoPConfig {
     // Guided planner configuration
     std::string guided_planner_method = "syclop_rrt";
     GuidedPlannerConfig guided_planner_config;
+
+    // Segmentation configuration
+    int segment_timesteps = 30;  // Number of timesteps per segment
+};
+
+// ============================================================================
+// Path Segment Structure
+// ============================================================================
+
+struct PathSegment {
+    size_t robot_index;           // Which robot this segment belongs to
+    size_t segment_index;         // Index of this segment in the robot's path
+    ob::State* start_state;       // Start state of segment (owned by original path)
+    ob::State* end_state;         // End state of segment (owned by original path)
+    std::vector<oc::Control*> controls;      // Controls in this segment (owned by original path)
+    std::vector<double> control_durations;   // Duration for each control (may be partial)
+    double total_duration;        // Total duration of this segment
+    int start_timestep;           // Starting timestep of this segment
+    int end_timestep;             // Ending timestep of this segment
 };
 
 // ============================================================================
@@ -85,6 +104,7 @@ public:
     const std::vector<std::vector<int>>& getHighLevelPaths() const { return high_level_paths_; }
     const oc::DecompositionPtr& getDecomposition() const { return decomp_; }
     const std::vector<GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
+    const std::vector<std::vector<PathSegment>>& getPathSegments() const { return path_segments_; }
 
 private:
     // Configuration
@@ -108,6 +128,7 @@ private:
     // Planning state
     std::vector<std::vector<int>> high_level_paths_;
     std::vector<GuidedPlanningResult> guided_planning_results_;
+    std::vector<std::vector<PathSegment>> path_segments_;  // Segments for each robot
     bool problem_loaded_ = false;
 
     // Collision manager for obstacles (shared with guided planners)
