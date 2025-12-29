@@ -406,11 +406,262 @@ void MRSyCLoPPlanner::segmentGuidedPaths()
 #endif
 }
 
+// ============================================================================
+// Collision Checking Helper Functions
+// ============================================================================
+
+const PathSegment* MRSyCLoPPlanner::findSegmentAtTimestep(size_t robot_idx, int timestep) const
+{
+    if (robot_idx >= path_segments_.size()) {
+        return nullptr;
+    }
+
+    const auto& segments = path_segments_[robot_idx];
+    for (const auto& segment : segments) {
+        if (segment.start_timestep <= timestep && timestep < segment.end_timestep) {
+            return &segment;
+        }
+    }
+    return nullptr;
+}
+
+void MRSyCLoPPlanner::propagateToTimestep(
+    size_t robot_idx,
+    size_t segment_idx,
+    int timestep,
+    ob::State* result) const
+{
+    const auto& segment = path_segments_[robot_idx][segment_idx];
+    auto si = robots_[robot_idx]->getSpaceInformation();
+
+    // Start from segment start state
+    si->copyState(result, segment.start_state);
+
+    // If at start timestep, no propagation needed
+    if (timestep == segment.start_timestep) {
+        return;
+    }
+
+    // Calculate relative timestep within segment
+    int relative_timestep = timestep - segment.start_timestep;
+
+    // Propagate through controls until we reach the target timestep
+    int accumulated_timesteps = 0;
+    ob::State* temp_state = si->getStateSpace()->allocState();
+    si->copyState(temp_state, segment.start_state);
+
+    for (size_t ctrl_idx = 0; ctrl_idx < segment.controls.size(); ++ctrl_idx) {
+        double duration = segment.control_durations[ctrl_idx];
+        int control_timesteps = static_cast<int>(std::ceil(duration));
+
+        if (accumulated_timesteps + control_timesteps <= relative_timestep) {
+            // Apply full control
+            robots_[robot_idx]->propagate(
+                temp_state,
+                segment.controls[ctrl_idx],
+                duration,
+                temp_state);
+            accumulated_timesteps += control_timesteps;
+        } else {
+            // Partial control application
+            double partial_duration = relative_timestep - accumulated_timesteps;
+            robots_[robot_idx]->propagate(
+                temp_state,
+                segment.controls[ctrl_idx],
+                partial_duration,
+                temp_state);
+            break;
+        }
+    }
+
+    si->copyState(result, temp_state);
+    si->getStateSpace()->freeState(temp_state);
+}
+
+bool MRSyCLoPPlanner::checkTwoRobotCollision(
+    size_t robot_idx_1,
+    const ob::State* state_1,
+    size_t robot_idx_2,
+    const ob::State* state_2,
+    size_t& part_1,
+    size_t& part_2) const
+{
+    auto robot_1 = robots_[robot_idx_1];
+    auto robot_2 = robots_[robot_idx_2];
+
+    for (size_t p1 = 0; p1 < robot_1->numParts(); ++p1) {
+        for (size_t p2 = 0; p2 < robot_2->numParts(); ++p2) {
+            const auto& transform_1 = robot_1->getTransform(state_1, p1);
+            const auto& transform_2 = robot_2->getTransform(state_2, p2);
+
+            fcl::CollisionObjectf co_1(robot_1->getCollisionGeometry(p1));
+            co_1.setTranslation(transform_1.translation());
+            co_1.setRotation(transform_1.rotation());
+            co_1.computeAABB();
+
+            fcl::CollisionObjectf co_2(robot_2->getCollisionGeometry(p2));
+            co_2.setTranslation(transform_2.translation());
+            co_2.setRotation(transform_2.rotation());
+            co_2.computeAABB();
+
+            fcl::CollisionRequestf request;
+            fcl::CollisionResultf result;
+            fcl::collide(&co_1, &co_2, request, result);
+
+            if (result.isCollision()) {
+                part_1 = p1;
+                part_2 = p2;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// ============================================================================
+// Collision Checking Main Function
+// ============================================================================
+
 bool MRSyCLoPPlanner::checkSegmentsForCollisions()
 {
-    // TODO @imngui
-    std::cout << "Collision checking for segments is not implemented yet." << std::endl;
-    return false; // No collisions detected (placeholder)
+    // Clear previous collision data
+    segment_collisions_.clear();
+
+#ifdef DBG_PRINTS
+    std::cout << "Checking segments for collisions..." << std::endl;
+#endif
+
+    // Handle edge cases
+    if (path_segments_.empty()) {
+        return false;  // No segments to check
+    }
+
+    // Find maximum segment count across all robots
+    size_t max_segment_count = 0;
+    for (const auto& robot_segments : path_segments_) {
+        max_segment_count = std::max(max_segment_count, robot_segments.size());
+    }
+
+    if (max_segment_count == 0) {
+        return false;  // No segments to check
+    }
+
+    // Allocate states for each robot (one per robot for current timestep)
+    std::vector<ob::State*> current_states(robots_.size(), nullptr);
+    for (size_t i = 0; i < robots_.size(); ++i) {
+        current_states[i] = robots_[i]->getSpaceInformation()->getStateSpace()->allocState();
+    }
+
+    // Iterate over segment indices (NEW: segment-based approach)
+    for (size_t seg_idx = 0; seg_idx < max_segment_count; ++seg_idx) {
+
+        // Find the minimum duration among robots that have this segment
+        int min_duration = INT_MAX;
+        bool any_robot_has_segment = false;
+
+        for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
+            if (seg_idx < path_segments_[robot_idx].size()) {
+                any_robot_has_segment = true;
+                const auto& segment = path_segments_[robot_idx][seg_idx];
+                int duration = segment.end_timestep - segment.start_timestep;
+                min_duration = std::min(min_duration, duration);
+            }
+        }
+
+        if (!any_robot_has_segment) continue;
+
+        // Check each relative timestep within this segment index
+        for (int rel_t = 0; rel_t < min_duration; ++rel_t) {
+
+            // Propagate each robot to relative timestep rel_t within segment seg_idx
+            for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
+                if (seg_idx < path_segments_[robot_idx].size()) {
+                    // Robot has this segment - propagate to timestep within this segment
+                    const auto& segment = path_segments_[robot_idx][seg_idx];
+                    int absolute_timestep = segment.start_timestep + rel_t;
+                    propagateToTimestep(robot_idx, seg_idx, absolute_timestep, current_states[robot_idx]);
+                } else if (!path_segments_[robot_idx].empty()) {
+                    // Robot finished - use goal state (end of last segment)
+                    const auto& last_segment = path_segments_[robot_idx].back();
+                    robots_[robot_idx]->getSpaceInformation()->copyState(
+                        current_states[robot_idx], last_segment.end_state);
+                }
+                // else: robot has no segments, skip
+            }
+
+            // Calculate absolute timestep for collision reporting
+            // (use first robot that has this segment as reference)
+            int absolute_timestep = rel_t;
+            for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
+                if (seg_idx < path_segments_[robot_idx].size()) {
+                    absolute_timestep = path_segments_[robot_idx][seg_idx].start_timestep + rel_t;
+                    break;
+                }
+            }
+
+            // Note: Robot-environment collisions are guaranteed to be avoided by the
+            // guided planner's state validity checker. We only check robot-robot
+            // collisions here since individual planners don't coordinate with each other.
+
+            // Check robot-robot collisions (only if 2+ robots)
+            if (robots_.size() >= 2) {
+                for (size_t i = 0; i < robots_.size(); ++i) {
+                    if (path_segments_[i].empty()) continue;
+
+                    for (size_t j = i + 1; j < robots_.size(); ++j) {
+                        if (path_segments_[j].empty()) continue;
+
+                        size_t part_i, part_j;
+                        if (checkTwoRobotCollision(i, current_states[i], j, current_states[j], part_i, part_j)) {
+                            // Record collision
+                            SegmentCollision collision;
+                            collision.type = SegmentCollision::ROBOT_ROBOT;
+                            collision.robot_index_1 = i;
+                            collision.robot_index_2 = j;
+                            collision.timestep = absolute_timestep;
+                            collision.part_index_1 = part_i;
+                            collision.part_index_2 = part_j;
+
+                            // Both robots are now at the same segment index
+                            if (seg_idx < path_segments_[i].size()) {
+                                collision.segment_index_1 = seg_idx;
+                            } else if (!path_segments_[i].empty()) {
+                                collision.segment_index_1 = path_segments_[i].size() - 1;
+                            }
+
+                            if (seg_idx < path_segments_[j].size()) {
+                                collision.segment_index_2 = seg_idx;
+                            } else if (!path_segments_[j].empty()) {
+                                collision.segment_index_2 = path_segments_[j].size() - 1;
+                            }
+
+                            segment_collisions_.push_back(collision);
+
+#ifdef DBG_PRINTS
+                            std::cout << "  Robot-robot collision: Robots " << i << " and " << j
+                                      << " at segment " << seg_idx
+                                      << " (timestep " << absolute_timestep << ")" << std::endl;
+#endif
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Free allocated states
+    for (size_t i = 0; i < current_states.size(); ++i) {
+        if (current_states[i]) {
+            robots_[i]->getSpaceInformation()->getStateSpace()->freeState(current_states[i]);
+        }
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "  Found " << segment_collisions_.size() << " collision(s)" << std::endl;
+#endif
+
+    return !segment_collisions_.empty();
 }
 
 void MRSyCLoPPlanner::updateDecomposition()
@@ -706,11 +957,52 @@ int main(int argc, char* argv[]) {
         std::cout << "  Success: " << (result.success ? "Yes" : "No") << std::endl;
         std::cout << "  Planning time: " << result.planning_time << " seconds" << std::endl;
 
-        // TODO: Write the final plan to the output files
-        // For now, just write a placeholder
+        // Write the final plan to the output files
         YAML::Node output;
         output["success"] = result.success;
         output["planning_time"] = result.planning_time;
+
+        if (result.success) {
+            YAML::Node result_node;
+            const auto& guided_paths = planner.getGuidedPaths();
+            const auto& robots = planner.getRobots();
+
+            // For each robot (include all, even failed ones)
+            for (size_t robot_idx = 0; robot_idx < guided_paths.size(); ++robot_idx) {
+                YAML::Node robot_data;
+                YAML::Node states_node;
+
+                const auto& guided_result = guided_paths[robot_idx];
+
+                // Only write states if this robot's planning succeeded
+                if (guided_result.success && guided_result.path) {
+                    auto path = guided_result.path;
+                    auto si = robots[robot_idx]->getSpaceInformation();
+
+                    // Extract all states from the path
+                    for (size_t i = 0; i < path->getStateCount(); ++i) {
+                        const auto state = path->getState(i);
+
+                        // Convert OMPL state to vector of doubles
+                        std::vector<double> state_vals;
+                        si->getStateSpace()->copyToReals(state_vals, state);
+
+                        // Write state values to YAML
+                        YAML::Node state_node;
+                        for (double val : state_vals) {
+                            state_node.push_back(val);
+                        }
+                        states_node.push_back(state_node);
+                    }
+                }
+                // If failed, states_node remains empty
+
+                robot_data["states"] = states_node;
+                result_node.push_back(robot_data);
+            }
+
+            output["result"] = result_node;
+        }
 
         std::ofstream fout(outputFile);
         fout << output;

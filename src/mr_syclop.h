@@ -60,6 +60,31 @@ struct PathSegment {
 };
 
 // ============================================================================
+// Segment Collision Structure
+// ============================================================================
+
+struct SegmentCollision {
+    enum CollisionType {
+        ROBOT_ROBOT,      // Collision between two robots
+        ROBOT_OBSTACLE    // Collision between robot and environment
+    };
+
+    CollisionType type;
+    size_t robot_index_1;      // Primary robot (or only robot for ROBOT_OBSTACLE)
+    size_t robot_index_2;      // Secondary robot (only for ROBOT_ROBOT)
+    size_t segment_index_1;    // Segment of robot 1
+    size_t segment_index_2;    // Segment of robot 2 (only for ROBOT_ROBOT)
+    int timestep;              // Timestep where collision occurred
+    size_t part_index_1;       // Which part of robot 1 collided
+    size_t part_index_2;       // Which part of robot 2 collided (only for ROBOT_ROBOT)
+
+    SegmentCollision()
+        : type(ROBOT_OBSTACLE), robot_index_1(0), robot_index_2(0),
+          segment_index_1(0), segment_index_2(0), timestep(0),
+          part_index_1(0), part_index_2(0) {}
+};
+
+// ============================================================================
 // Planning Result Structure
 // ============================================================================
 
@@ -97,7 +122,7 @@ public:
     void computeHighLevelPaths();
     void computeGuidedPaths();
     void segmentGuidedPaths();
-    bool checkSegmentsForCollisions();
+    bool checkSegmentsForCollisions();  // Checks robot-robot collisions only; obstacle avoidance is handled by guided planner
     void resolveCollisions();
 
     // Accessors
@@ -105,6 +130,7 @@ public:
     const oc::DecompositionPtr& getDecomposition() const { return decomp_; }
     const std::vector<GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
     const std::vector<std::vector<PathSegment>>& getPathSegments() const { return path_segments_; }
+    const std::vector<std::shared_ptr<Robot>>& getRobots() const { return robots_; }
 
 private:
     // Configuration
@@ -129,6 +155,7 @@ private:
     std::vector<std::vector<int>> high_level_paths_;
     std::vector<GuidedPlanningResult> guided_planning_results_;
     std::vector<std::vector<PathSegment>> path_segments_;  // Segments for each robot
+    std::vector<SegmentCollision> segment_collisions_;     // Detected collisions
     bool problem_loaded_ = false;
 
     // Collision manager for obstacles (shared with guided planners)
@@ -142,6 +169,13 @@ private:
     std::vector<fcl::CollisionObjectf*> getObstaclesInRegion(
         const std::vector<double>& region_min,
         const std::vector<double>& region_max) const;
+
+    // Collision checking helpers
+    const PathSegment* findSegmentAtTimestep(size_t robot_idx, int timestep) const;
+    void propagateToTimestep(size_t robot_idx, size_t segment_idx, int timestep, ob::State* result) const;
+    bool checkTwoRobotCollision(size_t robot_idx_1, const ob::State* state_1,
+                               size_t robot_idx_2, const ob::State* state_2,
+                               size_t& part_1, size_t& part_2) const;
 
     // Collision resolution strategies
     void updateDecomposition();
