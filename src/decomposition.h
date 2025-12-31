@@ -10,6 +10,11 @@ class GridDecompositionImpl : public ompl::control::GridDecomposition {
     void project(const ompl::base::State* s, std::vector<double>& coord) const override;
 
     void sampleFullState(const ompl::base::StateSamplerPtr& sampler, const std::vector<double>& coord, ompl::base::State* s) const override;
+
+    // Public wrapper to access protected getRegionBounds method
+    const ompl::base::RealVectorBounds& getRegionBoundsPublic(int rid) const {
+        return getRegionBounds(rid);
+    }
 };
 
 #endif // GRID_DECOMPOSITION_IMPL_H

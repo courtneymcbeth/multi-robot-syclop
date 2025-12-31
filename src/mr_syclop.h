@@ -25,9 +25,18 @@ struct MAPFConfig {
     int region_capacity = 1;           // Robots per vertex/edge (for CBS)
 };
 
+struct CollisionResolutionConfig {
+    int max_decomposition_attempts = 3;           // How many decomposition refinement levels (0=skip)
+    int max_subproblem_expansion_attempts = 1;    // How many subproblem expansions (0=skip)
+    int max_composite_attempts = 1;               // How many composite planner attempts (0=skip)
+    int max_total_resolution_attempts = 10;       // Overall iteration limit
+    double decomposition_subdivision_factor = 2.0; // How much to subdivide each time
+};
+
 struct MRSyCLoPConfig {
     int decomposition_region_length = 1;
     double planning_time_limit = 60.0;
+    int seed = -1;  // Random seed (-1 for random)
 
     // MAPF configuration
     MAPFConfig mapf_config;
@@ -41,6 +50,9 @@ struct MRSyCLoPConfig {
 
     // Segmentation configuration
     int segment_timesteps = 30;  // Number of timesteps per segment
+
+    // Collision resolution configuration
+    CollisionResolutionConfig collision_resolution_config;
 };
 
 // ============================================================================
@@ -82,6 +94,20 @@ struct SegmentCollision {
         : type(ROBOT_OBSTACLE), robot_index_1(0), robot_index_2(0),
           segment_index_1(0), segment_index_2(0), timestep(0),
           part_index_1(0), part_index_2(0) {}
+};
+
+// ============================================================================
+// Path Update Info (for collision resolution)
+// ============================================================================
+
+struct PathUpdateInfo {
+    size_t robot_index;
+    int start_timestep;
+    int end_timestep;
+    size_t start_segment_idx;
+    size_t end_segment_idx;
+    ob::State* entry_state;
+    ob::State* exit_state;
 };
 
 // ============================================================================
@@ -131,6 +157,10 @@ public:
     const std::vector<GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
     const std::vector<std::vector<PathSegment>>& getPathSegments() const { return path_segments_; }
     const std::vector<std::shared_ptr<Robot>>& getRobots() const { return robots_; }
+    const std::vector<SegmentCollision>& getCollisions() const { return segment_collisions_; }
+
+    // Debug output
+    void exportDebugData(YAML::Node& output) const;
 
 private:
     // Configuration
@@ -177,7 +207,7 @@ private:
                                size_t robot_idx_2, const ob::State* state_2,
                                size_t& part_1, size_t& part_2) const;
 
-    // Collision resolution strategies
+    // Collision resolution strategies (old stubs - will be removed/updated)
     void updateDecomposition();
     void expandSubproblem();
     PlanningResult useCompositePlanner(
@@ -186,6 +216,50 @@ private:
         const std::vector<std::vector<double>>& subproblem_goals,
         const std::vector<double>& subproblem_env_min,
         const std::vector<double>& subproblem_env_max);
+
+    // Collision resolution - modular strategy system
+    bool resolveCollisionWithStrategies(const SegmentCollision& collision);
+
+    // Strategy implementations
+    bool resolveWithDecompositionRefinement(const SegmentCollision& collision, int max_attempts);
+    bool resolveWithSubproblemExpansion(const SegmentCollision& collision, int max_attempts);
+    bool resolveWithCompositePlanner(const SegmentCollision& collision, int max_attempts);
+
+    // Helper methods for all strategies
+    oc::DecompositionPtr createLocalDecomposition(
+        int parent_region,
+        double subdivision_factor);
+    oc::DecompositionPtr createMultiCellDecomposition(
+        const std::vector<int>& regions,
+        double subdivision_factor);
+    bool extractReplanningBounds(
+        const SegmentCollision& collision,
+        int collision_region,
+        PathUpdateInfo& update_info_1,
+        PathUpdateInfo& update_info_2);
+    void integrateRefinedPaths(
+        const std::vector<size_t>& robot_indices,
+        const std::vector<GuidedPlanningResult>& local_results,
+        const PathUpdateInfo& update_info_1,
+        const PathUpdateInfo& update_info_2);
+    void recheckCollisionsFromTimestep(int start_timestep);
+    void segmentSinglePath(
+        size_t robot_idx,
+        const std::shared_ptr<oc::PathControl>& path,
+        int start_timestep_offset,
+        std::vector<PathSegment>& segments);
+
+    // Subproblem expansion helpers
+    std::vector<int> getExpandedRegion(int center_region, int expansion_layers);
+    void computeExpandedBounds(
+        const std::vector<int>& regions,
+        std::vector<double>& env_min,
+        std::vector<double>& env_max);
+
+    // Composite planner helpers
+    bool extractIndividualPaths(
+        const std::shared_ptr<oc::PathControl>& compound_path,
+        std::vector<std::shared_ptr<oc::PathControl>>& individual_paths);
 };
 
 #endif // MR_SYCLOP_H

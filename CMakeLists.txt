@@ -80,6 +80,8 @@ target_include_directories(guided_planner PUBLIC
   ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
   ${FCL_INCLUDE_DIRS}
 )
+# Force debug flags for guided_planner regardless of build type
+target_compile_options(guided_planner PRIVATE -g -O0)
 
 ## mr_syclop
 
@@ -102,6 +104,8 @@ target_include_directories(mr_syclop PUBLIC
   ${YAML_INCLUDE_DIRS}
   ${FCL_INCLUDE_DIRS}
 )
+# Force debug flags for mr_syclop regardless of build type
+target_compile_options(mr_syclop PRIVATE -g -O0)
 
 ## srrt
 
