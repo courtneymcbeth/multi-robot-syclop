@@ -186,3 +186,32 @@ target_include_directories(drrt PUBLIC
   ${FCL_INCLUDE_DIRS}
   ${YAML_INCLUDE_DIRS}
 )
+
+## arc (Adaptive Robot Coordination) library and executable
+
+# Create library for ARC implementation (can be used by other targets)
+add_library(arc_lib
+  src/arc.cpp
+)
+target_link_libraries(arc_lib
+  PUBLIC motion_planning_common
+  PUBLIC ompl
+  PUBLIC ${FCL_LIBRARIES}
+)
+target_include_directories(arc_lib PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${FCL_INCLUDE_DIRS}
+)
+
+# Executable that uses the library
+add_executable(arc
+  src/arc_main.cpp
+)
+target_link_libraries(arc
+  arc_lib
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+)
+target_include_directories(arc PUBLIC
+  ${YAML_INCLUDE_DIRS}
+)
