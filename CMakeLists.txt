@@ -61,6 +61,7 @@ target_include_directories(mapf_solver_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
   ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
 )
+# target_compile_options(mapf_solver_lib PRIVATE -g -O0)
 
 
 ## guided_planner library
