@@ -439,6 +439,22 @@ void MRSyCLoPPlanner::propagateToTimestep(
     const auto& segment = path_segments_[robot_idx][segment_idx];
     auto si = robots_[robot_idx]->getSpaceInformation();
 
+    // Validate that timestep is within the segment's range
+    if (timestep < segment.start_timestep || timestep >= segment.end_timestep) {
+        std::cerr << "ERROR: propagateToTimestep called with invalid timestep!" << std::endl;
+        std::cerr << "  robot_idx=" << robot_idx << ", segment_idx=" << segment_idx << std::endl;
+        std::cerr << "  timestep=" << timestep << std::endl;
+        std::cerr << "  segment.start_timestep=" << segment.start_timestep << std::endl;
+        std::cerr << "  segment.end_timestep=" << segment.end_timestep << std::endl;
+
+        // Clamp to valid range as a fallback
+        if (timestep < segment.start_timestep) {
+            timestep = segment.start_timestep;
+        } else {
+            timestep = segment.end_timestep - 1;
+        }
+    }
+
     // Start from segment start state
     si->copyState(result, segment.start_state);
 
@@ -1029,10 +1045,12 @@ void MRSyCLoPPlanner::recheckCollisionsFromTimestep(int start_timestep)
     // Clear all collisions
     segment_collisions_.clear();
 
-    // Find maximum segment count
-    size_t max_segment_count = 0;
+    // Find the maximum timestep across all robots
+    int max_timestep = 0;
     for (const auto& robot_segments : path_segments_) {
-        max_segment_count = std::max(max_segment_count, robot_segments.size());
+        if (!robot_segments.empty()) {
+            max_timestep = std::max(max_timestep, robot_segments.back().end_timestep);
+        }
     }
 
     // Allocate states for each robot
@@ -1041,95 +1059,67 @@ void MRSyCLoPPlanner::recheckCollisionsFromTimestep(int start_timestep)
         current_states[i] = robots_[i]->getSpaceInformation()->getStateSpace()->allocState();
     }
 
-    // Check collisions starting from segments containing start_timestep
-    for (size_t seg_idx = 0; seg_idx < max_segment_count; ++seg_idx) {
-        // Skip segments that end before start_timestep
-        bool any_relevant = false;
+    // Check collisions at each timestep
+    for (int timestep = start_timestep; timestep < max_timestep; ++timestep) {
+        // Propagate each robot to this timestep
         for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
-            if (seg_idx < path_segments_[robot_idx].size()) {
-                const auto& segment = path_segments_[robot_idx][seg_idx];
-                if (segment.end_timestep > start_timestep) {
-                    any_relevant = true;
-                    break;
-                }
+            if (path_segments_[robot_idx].empty()) continue;
+
+            // Find the segment that contains this timestep for this robot
+            const PathSegment* seg = findSegmentAtTimestep(robot_idx, timestep);
+
+            if (seg != nullptr) {
+                propagateToTimestep(robot_idx, seg->segment_index, timestep,
+                                    current_states[robot_idx]);
+            } else {
+                // Robot's path has ended, use final state
+                const auto& last_segment = path_segments_[robot_idx].back();
+                robots_[robot_idx]->getSpaceInformation()->copyState(
+                    current_states[robot_idx], last_segment.end_state);
             }
         }
 
-        if (!any_relevant) continue;
+        // Check robot-robot collisions at this timestep
+        for (size_t i = 0; i < robots_.size(); ++i) {
+            if (path_segments_[i].empty()) continue;
 
-        // Find minimum duration among robots that have this segment
-        int min_duration = INT_MAX;
-        for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
-            if (seg_idx < path_segments_[robot_idx].size()) {
-                const auto& segment = path_segments_[robot_idx][seg_idx];
-                int duration = segment.end_timestep - segment.start_timestep;
-                min_duration = std::min(min_duration, duration);
-            }
-        }
+            for (size_t j = i + 1; j < robots_.size(); ++j) {
+                if (path_segments_[j].empty()) continue;
 
-        if (min_duration == INT_MAX) continue;
+                size_t part_i, part_j;
+                if (checkTwoRobotCollision(i, current_states[i], j,
+                                           current_states[j], part_i, part_j)) {
+                    // Found a collision - record it and stop
+                    const PathSegment* seg_i = findSegmentAtTimestep(i, timestep);
+                    const PathSegment* seg_j = findSegmentAtTimestep(j, timestep);
 
-        // Check each relative timestep within this segment
-        for (int rel_t = 0; rel_t < min_duration; ++rel_t) {
-            int absolute_timestep = 0;
+                    SegmentCollision coll;
+                    coll.type = SegmentCollision::ROBOT_ROBOT;
+                    coll.robot_index_1 = i;
+                    coll.robot_index_2 = j;
+                    coll.timestep = timestep;
+                    coll.part_index_1 = part_i;
+                    coll.part_index_2 = part_j;
 
-            // Propagate each robot to relative timestep
-            for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
-                if (seg_idx < path_segments_[robot_idx].size()) {
-                    const auto& segment = path_segments_[robot_idx][seg_idx];
-                    absolute_timestep = segment.start_timestep + rel_t;
-
-                    if (absolute_timestep < start_timestep) continue;
-
-                    propagateToTimestep(robot_idx, seg_idx, absolute_timestep,
-                                        current_states[robot_idx]);
-                } else if (!path_segments_[robot_idx].empty()) {
-                    const auto& last_segment = path_segments_[robot_idx].back();
-                    robots_[robot_idx]->getSpaceInformation()->copyState(
-                        current_states[robot_idx], last_segment.end_state);
-                }
-            }
-
-            if (absolute_timestep < start_timestep) continue;
-
-            // Check robot-robot collisions
-            for (size_t i = 0; i < robots_.size(); ++i) {
-                if (path_segments_[i].empty()) continue;
-
-                for (size_t j = i + 1; j < robots_.size(); ++j) {
-                    if (path_segments_[j].empty()) continue;
-
-                    size_t part_i, part_j;
-                    if (checkTwoRobotCollision(i, current_states[i], j,
-                                               current_states[j], part_i, part_j)) {
-                        SegmentCollision coll;
-                        coll.type = SegmentCollision::ROBOT_ROBOT;
-                        coll.robot_index_1 = i;
-                        coll.robot_index_2 = j;
-                        coll.timestep = absolute_timestep;
-                        coll.part_index_1 = part_i;
-                        coll.part_index_2 = part_j;
-
-                        if (seg_idx < path_segments_[i].size()) {
-                            coll.segment_index_1 = seg_idx;
-                        } else if (!path_segments_[i].empty()) {
-                            coll.segment_index_1 = path_segments_[i].size() - 1;
-                        }
-
-                        if (seg_idx < path_segments_[j].size()) {
-                            coll.segment_index_2 = seg_idx;
-                        } else if (!path_segments_[j].empty()) {
-                            coll.segment_index_2 = path_segments_[j].size() - 1;
-                        }
-
-                        segment_collisions_.push_back(coll);
-
-                        // Only report first collision found
-#ifdef DBG_PRINTS
-                        std::cout << "    Found collision at timestep " << absolute_timestep << std::endl;
-#endif
-                        goto cleanup;
+                    if (seg_i != nullptr) {
+                        coll.segment_index_1 = seg_i->segment_index;
+                    } else if (!path_segments_[i].empty()) {
+                        coll.segment_index_1 = path_segments_[i].size() - 1;
                     }
+
+                    if (seg_j != nullptr) {
+                        coll.segment_index_2 = seg_j->segment_index;
+                    } else if (!path_segments_[j].empty()) {
+                        coll.segment_index_2 = path_segments_[j].size() - 1;
+                    }
+
+                    segment_collisions_.push_back(coll);
+
+                    // Only report first collision found
+#ifdef DBG_PRINTS
+                    std::cout << "    Found collision at timestep " << timestep << std::endl;
+#endif
+                    goto cleanup;
                 }
             }
         }
@@ -1226,15 +1216,102 @@ void MRSyCLoPPlanner::integrateRefinedPaths(
         std::cout << "    Integrating refined path for robot " << robot_idx << std::endl;
 #endif
 
-        // Segment the refined path
-        std::vector<PathSegment> refined_segments;
-        segmentSinglePath(robot_idx, result.path, update_info.start_timestep, refined_segments);
+        // Note: We'll re-segment the entire path after splicing the PathControl below
+        // This is necessary because segment state pointers become invalid after path updates
 
-        // For simplicity, replace entire path (a more sophisticated approach would splice)
-        path_segments_[robot_idx] = refined_segments;
+        // Splice the full PathControl for guided_planning_results
+        // We need to construct a complete path: before + refined + after
+        auto si = robots_[robot_idx]->getSpaceInformation();
+        auto original_path = guided_planning_results_[robot_idx].path;
 
-        // Update guided planning results
-        guided_planning_results_[robot_idx] = result;
+#ifdef DBG_PRINTS
+        if (original_path) {
+            std::cout << "      Original path has " << original_path->getStateCount()
+                      << " states and " << original_path->getControlCount() << " controls" << std::endl;
+        }
+        if (result.path) {
+            std::cout << "      Refined path has " << result.path->getStateCount()
+                      << " states and " << result.path->getControlCount() << " controls" << std::endl;
+        }
+#endif
+
+        if (original_path && result.path) {
+            // Create a new path that combines the three parts
+            auto spliced_path = std::make_shared<oc::PathControl>(si);
+
+            // Part 1: Extract states/controls from original path up to entry state
+            // Find which state in original path corresponds to entry
+            size_t entry_state_idx = 0;
+            for (size_t s = 0; s < original_path->getStateCount(); ++s) {
+                if (si->getStateSpace()->distance(original_path->getState(s), update_info.entry_state) < 1e-3) {
+                    entry_state_idx = s;
+                    break;
+                }
+            }
+
+#ifdef DBG_PRINTS
+            std::cout << "      Entry state found at index " << entry_state_idx << std::endl;
+#endif
+
+            // Add states and controls before entry
+            for (size_t s = 0; s < entry_state_idx && s < original_path->getControlCount(); ++s) {
+                spliced_path->append(original_path->getState(s),
+                                    original_path->getControl(s),
+                                    original_path->getControlDuration(s));
+            }
+
+            // Part 2: Add the refined path
+            for (size_t s = 0; s < result.path->getControlCount(); ++s) {
+                spliced_path->append(result.path->getState(s),
+                                    result.path->getControl(s),
+                                    result.path->getControlDuration(s));
+            }
+
+            // Part 3: Extract states/controls from original path after exit state
+            // Find which state in original path corresponds to exit
+            size_t exit_state_idx = original_path->getStateCount() - 1;
+            for (size_t s = entry_state_idx; s < original_path->getStateCount(); ++s) {
+                if (si->getStateSpace()->distance(original_path->getState(s), update_info.exit_state) < 1e-3) {
+                    exit_state_idx = s;
+                    break;
+                }
+            }
+
+            // Add states and controls after exit (if exit is not the final state)
+            for (size_t s = exit_state_idx; s < original_path->getControlCount(); ++s) {
+                spliced_path->append(original_path->getState(s),
+                                    original_path->getControl(s),
+                                    original_path->getControlDuration(s));
+            }
+
+            // Add final state
+            spliced_path->append(original_path->getState(original_path->getStateCount() - 1));
+
+#ifdef DBG_PRINTS
+            std::cout << "      Spliced path has " << spliced_path->getStateCount()
+                      << " states and " << spliced_path->getControlCount() << " controls" << std::endl;
+#endif
+
+            // Update the guided planning result with the spliced path
+            guided_planning_results_[robot_idx].path = spliced_path;
+
+            // Re-segment the entire updated path from scratch
+            std::vector<PathSegment> new_segments;
+            segmentSinglePath(robot_idx, spliced_path, 0, new_segments);
+            path_segments_[robot_idx] = new_segments;
+
+#ifdef DBG_PRINTS
+            std::cout << "      Re-segmented path has " << new_segments.size() << " segments" << std::endl;
+#endif
+        } else {
+            // If we can't splice, fall back to just using the refined path
+            guided_planning_results_[robot_idx] = result;
+
+            // Re-segment the refined path
+            std::vector<PathSegment> new_segments;
+            segmentSinglePath(robot_idx, result.path, 0, new_segments);
+            path_segments_[robot_idx] = new_segments;
+        }
     }
 }
 
@@ -1253,8 +1330,18 @@ bool MRSyCLoPPlanner::resolveWithDecompositionRefinement(
     ob::State* state_1 = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
     ob::State* state_2 = robots_[robot_2]->getSpaceInformation()->getStateSpace()->allocState();
 
-    propagateToTimestep(robot_1, collision.segment_index_1, collision.timestep, state_1);
-    propagateToTimestep(robot_2, collision.segment_index_2, collision.timestep, state_2);
+    // Find the correct segments for the collision timestep (segments may have been updated)
+    const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
+    const PathSegment* seg_2 = findSegmentAtTimestep(robot_2, collision.timestep);
+
+    if (!seg_1 || !seg_2) {
+        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
+        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
+        return false;
+    }
+
+    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
+    propagateToTimestep(robot_2, seg_2->segment_index, collision.timestep, state_2);
 
     int collision_region = decomp_->locateRegion(state_1);
 
@@ -1281,14 +1368,49 @@ bool MRSyCLoPPlanner::resolveWithDecompositionRefinement(
             return false;
         }
 
+        // Validate that entry/exit states are within local decomposition bounds
+        std::vector<ob::State*> local_starts = {update_info_1.entry_state, update_info_2.entry_state};
+        std::vector<ob::State*> local_goals = {update_info_1.exit_state, update_info_2.exit_state};
+
+        bool states_in_bounds = true;
+        for (const auto* state : local_starts) {
+            if (local_decomp->locateRegion(state) < 0) {
+                states_in_bounds = false;
+#ifdef DBG_PRINTS
+                std::cout << "      Entry state outside local decomposition bounds" << std::endl;
+#endif
+                break;
+            }
+        }
+        if (states_in_bounds) {
+            for (const auto* state : local_goals) {
+                if (local_decomp->locateRegion(state) < 0) {
+                    states_in_bounds = false;
+#ifdef DBG_PRINTS
+                    std::cout << "      Exit state outside local decomposition bounds" << std::endl;
+#endif
+                    break;
+                }
+            }
+        }
+
+        if (!states_in_bounds) {
+#ifdef DBG_PRINTS
+            std::cout << "      States outside bounds, trying next refinement level" << std::endl;
+#endif
+            // Free states
+            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
+            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
+            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
+            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
+            continue;
+        }
+
         // MAPF replanning
         auto mapf_solver = createMAPFSolver(
             config_.mapf_config.method,
             config_.mapf_config.region_capacity,
             config_.planning_time_limit);
-
-        std::vector<ob::State*> local_starts = {update_info_1.entry_state, update_info_2.entry_state};
-        std::vector<ob::State*> local_goals = {update_info_1.exit_state, update_info_2.exit_state};
 
         auto local_high_level_paths = mapf_solver->solve(local_decomp, local_starts, local_goals);
 
@@ -1388,8 +1510,18 @@ bool MRSyCLoPPlanner::resolveWithSubproblemExpansion(
     ob::State* state_1 = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
     ob::State* state_2 = robots_[robot_2]->getSpaceInformation()->getStateSpace()->allocState();
 
-    propagateToTimestep(robot_1, collision.segment_index_1, collision.timestep, state_1);
-    propagateToTimestep(robot_2, collision.segment_index_2, collision.timestep, state_2);
+    // Find the correct segments for the collision timestep (segments may have been updated)
+    const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
+    const PathSegment* seg_2 = findSegmentAtTimestep(robot_2, collision.timestep);
+
+    if (!seg_1 || !seg_2) {
+        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
+        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
+        return false;
+    }
+
+    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
+    propagateToTimestep(robot_2, seg_2->segment_index, collision.timestep, state_2);
 
     int collision_region = decomp_->locateRegion(state_1);
 

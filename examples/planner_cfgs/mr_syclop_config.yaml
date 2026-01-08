@@ -1,7 +1,8 @@
 # Multi-Robot SyCLoP Planner Configuration
 
 # Random seed (set to -1 for random, or any positive integer for reproducibility)
-seed: 42
+# 31, 33 crash
+seed: -1
 
 # Decomposition region length
 decomposition_region_length: 5

@@ -55,6 +55,16 @@ std::vector<std::vector<int>> CBSMAPFSolver::solve(
                   << " from region " << start_region << " to " << goal_region << std::endl;
 #endif
 
+        // Validate that regions are valid
+        if (start_region < 0) {
+            throw std::runtime_error("CBS: Start state for robot " + std::to_string(i) +
+                                     " is outside decomposition bounds (region=" + std::to_string(start_region) + ")");
+        }
+        if (goal_region < 0) {
+            throw std::runtime_error("CBS: Goal state for robot " + std::to_string(i) +
+                                     " is outside decomposition bounds (region=" + std::to_string(goal_region) + ")");
+        }
+
         try {
             root.paths[i] = findPathWithConstraints(
                 graph, start_region, goal_region,
