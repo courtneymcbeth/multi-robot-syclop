@@ -126,7 +126,7 @@ cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="../install"
 - `max_control_duration`: Maximum propagation steps per control (default: 10)
 - `propagation_step_size`: Time step for state propagation (default: 0.1)
 
-### sRRT (Subdimensional RRT)
+### sRRT (Subdimensional Expansion RRT)
 
 **Type:** Geometric
 
@@ -146,7 +146,7 @@ cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="../install"
 
 **Type:** Geometric
 
-**Description:** Uses discrete roadmaps (SPARStwo) for efficient multi-query planning.
+**Description:** Builds reusable roadmaps (SPARStwo) for each robot, then uses discrete RRT to search through the implicit tensor product of these roadmaps for multi-robot coordination.
 
 **Usage:**
 ```bash
