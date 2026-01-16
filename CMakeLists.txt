@@ -16,6 +16,12 @@ set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 add_subdirectory(Multi-Robot-OMPL EXCLUDE_FROM_ALL)
 
+# Force db-CBS/dynoplan to use the same OMPL as Multi-Robot-OMPL
+# This prevents linking conflicts between OMPL v17 (local) and v18 (system)
+set(OMPL_FOUND TRUE CACHE BOOL "OMPL found" FORCE)
+set(OMPL_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src;${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src" CACHE STRING "OMPL include directories" FORCE)
+set(OMPL_LIBRARIES ompl CACHE STRING "OMPL libraries" FORCE)
+
 # eigenpy, pinocchio, and crocoddyl are built separately by build.sh and installed to ./install
 add_subdirectory(db-CBS EXCLUDE_FROM_ALL)
 
@@ -69,16 +75,23 @@ target_include_directories(mapf_solver_lib PUBLIC
 add_library(guided_planner
   src/guided/guided_planner.cpp
   src/guided/syclop_rrt_solver.cpp
+  src/guided/db_rrt_solver.cpp
 )
 target_link_libraries(guided_planner
   PUBLIC ompl
   PUBLIC ${FCL_LIBRARIES}
   PUBLIC motion_planning_common
+  PUBLIC idbastar::dbrrt
+  PUBLIC idbastar::optimization
+  PUBLIC dynobench::dynobench
 )
 target_include_directories(guided_planner PUBLIC
   ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/guided
   ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
   ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/dynobench/include
   ${FCL_INCLUDE_DIRS}
 )
 # Force debug flags for guided_planner regardless of build type

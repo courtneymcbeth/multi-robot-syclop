@@ -94,6 +94,10 @@ void MRSyCLoPPlanner::loadProblem(
     // Setup decomposition, collision manager, and robots
     setupDecomposition();
     setupCollisionManager();
+    // Convert FCL obstacles to dynobench format if using DB-RRT
+    if (config_.guided_planner_method == "db_rrt") {
+        setupDynobenchObstacles();
+    }
     setupRobots();
 
     problem_loaded_ = true;
@@ -128,6 +132,43 @@ void MRSyCLoPPlanner::setupCollisionManager()
     collision_manager_->setup();
 #ifdef DBG_PRINTS
     std::cout << "  Collision manager setup with " << obstacles_.size() << " obstacles" << std::endl;
+#endif
+}
+
+void MRSyCLoPPlanner::setupDynobenchObstacles()
+{
+#ifdef DBG_PRINTS
+    std::cout << "Converting obstacles to dynobench format..." << std::endl;
+#endif
+    dynobench_obstacles_.clear();
+    dynobench_obstacles_.reserve(obstacles_.size());
+
+    for (const auto* obs : obstacles_) {
+        const auto* geom = obs->collisionGeometry().get();
+        const auto& translation = obs->getTranslation();
+
+        // Check if it's a box (currently the only supported type)
+        if (const auto* box = dynamic_cast<const fcl::Boxf*>(geom)) {
+            dynobench::Obstacle dyno_obs;
+            dyno_obs.type = "box";
+
+            // FCL Boxf stores half-extents as side[i], full size = 2 * side[i]
+            // But we created it with full size, so box->side is actually half the size
+            // Actually, FCL Boxf constructor takes full width/height/depth
+            dyno_obs.size.resize(2);
+            dyno_obs.size(0) = box->side[0];  // width
+            dyno_obs.size(1) = box->side[1];  // height
+
+            dyno_obs.center.resize(2);
+            dyno_obs.center(0) = static_cast<double>(translation[0]);
+            dyno_obs.center(1) = static_cast<double>(translation[1]);
+
+            dynobench_obstacles_.push_back(dyno_obs);
+        }
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "  Converted " << dynobench_obstacles_.size() << " obstacles to dynobench format" << std::endl;
 #endif
 }
 
@@ -216,10 +257,12 @@ void MRSyCLoPPlanner::computeGuidedPaths()
 #endif
 
     // Create guided planner
-    auto guided_planner = createGuidedPlanner(
+    auto guided_planner = createGuidedPlannerWithDBRRT(
         config_.guided_planner_method,
         config_.guided_planner_config,
-        collision_manager_);
+        config_.db_rrt_config,
+        collision_manager_,
+        dynobench_obstacles_);
 
     // Clear previous results
     guided_planning_results_.clear();
@@ -230,7 +273,7 @@ void MRSyCLoPPlanner::computeGuidedPaths()
         std::cout << "Planning for robot " << i << "..." << std::endl;
 #endif
 
-        GuidedPlanningResult result = guided_planner->solve(
+        mr_syclop::GuidedPlanningResult result = guided_planner->solve(
             robots_[i],
             decomp_,
             start_states_[i],
@@ -1201,7 +1244,7 @@ void MRSyCLoPPlanner::segmentSinglePath(
 
 void MRSyCLoPPlanner::integrateRefinedPaths(
     const std::vector<size_t>& robot_indices,
-    const std::vector<GuidedPlanningResult>& local_results,
+    const std::vector<mr_syclop::GuidedPlanningResult>& local_results,
     const PathUpdateInfo& update_info_1,
     const PathUpdateInfo& update_info_2)
 {
@@ -1429,18 +1472,20 @@ bool MRSyCLoPPlanner::resolveWithDecompositionRefinement(
         }
 
         // Guided planning
-        auto guided_planner = createGuidedPlanner(
+        auto guided_planner = createGuidedPlannerWithDBRRT(
             config_.guided_planner_method,
             config_.guided_planner_config,
-            collision_manager_);
+            config_.db_rrt_config,
+            collision_manager_,
+            dynobench_obstacles_);
 
         std::vector<size_t> robot_indices = {robot_1, robot_2};
-        std::vector<GuidedPlanningResult> local_results;
+        std::vector<mr_syclop::GuidedPlanningResult> local_results;
 
         bool both_succeeded = true;
         for (size_t i = 0; i < robot_indices.size(); ++i) {
             size_t robot_idx = robot_indices[i];
-            GuidedPlanningResult result = guided_planner->solve(
+            mr_syclop::GuidedPlanningResult result = guided_planner->solve(
                 robots_[robot_idx],
                 local_decomp,
                 local_starts[i],
@@ -1595,18 +1640,20 @@ bool MRSyCLoPPlanner::resolveWithSubproblemExpansion(
         }
 
         // Guided planning
-        auto guided_planner = createGuidedPlanner(
+        auto guided_planner = createGuidedPlannerWithDBRRT(
             config_.guided_planner_method,
             config_.guided_planner_config,
-            collision_manager_);
+            config_.db_rrt_config,
+            collision_manager_,
+            dynobench_obstacles_);
 
         std::vector<size_t> robot_indices = {robot_1, robot_2};
-        std::vector<GuidedPlanningResult> local_results;
+        std::vector<mr_syclop::GuidedPlanningResult> local_results;
 
         bool both_succeeded = true;
         for (size_t i = 0; i < robot_indices.size(); ++i) {
             size_t robot_idx = robot_indices[i];
-            GuidedPlanningResult result = guided_planner->solve(
+            mr_syclop::GuidedPlanningResult result = guided_planner->solve(
                 robots_[robot_idx],
                 planning_decomp,
                 local_starts[i],
@@ -1996,6 +2043,89 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Load guided planner configuration
+        if (cfg["guided_planner_method"]) {
+            config.guided_planner_method = cfg["guided_planner_method"].as<std::string>();
+        }
+
+        if (cfg["guided_planner"]) {
+            const YAML::Node& gp = cfg["guided_planner"];
+            if (gp["time_per_robot"]) {
+                config.guided_planner_config.time_per_robot = gp["time_per_robot"].as<double>();
+            }
+            if (gp["debug"]) {
+                config.guided_planner_config.debug = gp["debug"].as<bool>();
+            }
+            if (gp["num_free_volume_samples"]) {
+                config.guided_planner_config.num_free_volume_samples = gp["num_free_volume_samples"].as<int>();
+            }
+            if (gp["num_region_expansions"]) {
+                config.guided_planner_config.num_region_expansions = gp["num_region_expansions"].as<int>();
+            }
+            if (gp["num_tree_expansions"]) {
+                config.guided_planner_config.num_tree_expansions = gp["num_tree_expansions"].as<int>();
+            }
+            if (gp["prob_abandon_lead_early"]) {
+                config.guided_planner_config.prob_abandon_lead_early = gp["prob_abandon_lead_early"].as<double>();
+            }
+            if (gp["prob_shortest_path"]) {
+                config.guided_planner_config.prob_shortest_path = gp["prob_shortest_path"].as<double>();
+            }
+            if (gp["use_regional_nn"]) {
+                config.guided_planner_config.use_regional_nn = gp["use_regional_nn"].as<bool>();
+            }
+
+            // Parse DB-RRT specific config
+            if (gp["db_rrt"]) {
+                const YAML::Node& db = gp["db_rrt"];
+                if (db["motions_file"]) {
+                    config.db_rrt_config.motions_file = db["motions_file"].as<std::string>();
+                }
+                if (db["models_base_path"]) {
+                    config.db_rrt_config.models_base_path = db["models_base_path"].as<std::string>();
+                }
+                if (db["timelimit"]) {
+                    config.db_rrt_config.timelimit = db["timelimit"].as<double>();
+                }
+                if (db["max_expands"]) {
+                    config.db_rrt_config.max_expands = db["max_expands"].as<int>();
+                }
+                if (db["goal_region"]) {
+                    config.db_rrt_config.goal_region = db["goal_region"].as<double>();
+                }
+                if (db["delta"]) {
+                    config.db_rrt_config.delta = db["delta"].as<double>();
+                }
+                if (db["goal_bias"]) {
+                    config.db_rrt_config.goal_bias = db["goal_bias"].as<double>();
+                }
+                if (db["max_motions"]) {
+                    config.db_rrt_config.max_motions = db["max_motions"].as<int>();
+                }
+                if (db["seed"]) {
+                    config.db_rrt_config.seed = db["seed"].as<int>();
+                }
+                if (db["do_optimization"]) {
+                    config.db_rrt_config.do_optimization = db["do_optimization"].as<bool>();
+                }
+                if (db["use_nigh_nn"]) {
+                    config.db_rrt_config.use_nigh_nn = db["use_nigh_nn"].as<bool>();
+                }
+                if (db["debug"]) {
+                    config.db_rrt_config.debug = db["debug"].as<bool>();
+                }
+                if (db["solver_id"]) {
+                    config.db_rrt_config.solver_id = db["solver_id"].as<int>();
+                }
+                if (db["use_region_guidance"]) {
+                    config.db_rrt_config.use_region_guidance = db["use_region_guidance"].as<bool>();
+                }
+                if (db["region_bias"]) {
+                    config.db_rrt_config.region_bias = db["region_bias"].as<double>();
+                }
+            }
+        }
+
         // Set coupled RRT config if needed
         config.coupled_rrt_config.goal_threshold = 0.5;
         config.coupled_rrt_config.min_control_duration = 1;
@@ -2005,6 +2135,10 @@ int main(int argc, char* argv[]) {
         std::cout << "  Segment timesteps: " << config.segment_timesteps << std::endl;
         std::cout << "  MAPF method: " << config.mapf_config.method << std::endl;
         std::cout << "  MAPF region capacity: " << config.mapf_config.region_capacity << std::endl;
+        std::cout << "  Guided planner method: " << config.guided_planner_method << std::endl;
+        std::cout << "  Guided planner time per robot: " << config.guided_planner_config.time_per_robot << "s" << std::endl;
+        std::cout << "  DB-RRT motions file: " << config.db_rrt_config.motions_file << std::endl;
+        std::cout << "  DB-RRT models path: " << config.db_rrt_config.models_base_path << std::endl;
 
         // Load problem description
         std::cout << "Loading problem description..." << std::endl;

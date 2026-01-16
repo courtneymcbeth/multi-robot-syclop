@@ -2,6 +2,7 @@
 """
 Interactive visualization script for Multi-Robot SyCLoP solutions with slider control
 Features: slider for seeking through the animation timeline
+Supports: mr_syclop format and dynobench/DB-RRT format
 Requires: matplotlib, pyyaml
 Install: pip install matplotlib pyyaml
 """
@@ -40,6 +41,129 @@ def load_yaml(filename):
     except yaml.YAMLError as e:
         print(f"Error parsing YAML: {e}")
         sys.exit(1)
+
+
+def detect_format(solution):
+    """Detect whether solution is in mr_syclop or dynobench/DB-RRT format.
+
+    Returns: 'mr_syclop' or 'dbrrt'
+    """
+    # DB-RRT format has 'solved' field (integer 0/1)
+    if 'solved' in solution:
+        return 'dbrrt'
+    # mr_syclop format has 'success' field (boolean)
+    if 'success' in solution:
+        return 'mr_syclop'
+    # Fallback: if result exists, assume mr_syclop
+    if 'result' in solution:
+        return 'mr_syclop'
+    return 'unknown'
+
+
+def extract_paths_from_solution(solution):
+    """Extract paths from solution regardless of format.
+
+    Returns: list of paths, where each path is a list of [x, y, ...] states
+    """
+    paths = []
+
+    if 'result' not in solution:
+        return paths
+
+    result = solution['result']
+
+    # Handle list of robot trajectories
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and 'states' in item:
+                # Format: [{states: [...]}, {states: [...]}]
+                paths.append(item['states'])
+            elif isinstance(item, list):
+                # Format: [[[x,y,theta], ...], [[x,y,theta], ...]]
+                # This could be a single trajectory as list of states
+                if item and isinstance(item[0], (list, tuple)) and len(item[0]) >= 2:
+                    paths.append(item)
+    elif isinstance(result, dict) and 'states' in result:
+        # Single robot: {states: [...]}
+        paths.append(result['states'])
+
+    return paths
+
+
+def compute_bounds_from_paths(paths, margin=1.0):
+    """Compute environment bounds from trajectory data.
+
+    Returns: (env_min, env_max) as [x, y] lists
+    """
+    if not paths:
+        return [0.0, 0.0], [10.0, 10.0]
+
+    all_x = []
+    all_y = []
+
+    for path in paths:
+        for state in path:
+            if len(state) >= 2:
+                all_x.append(state[0])
+                all_y.append(state[1])
+
+    if not all_x:
+        return [0.0, 0.0], [10.0, 10.0]
+
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+
+    # Add margin
+    env_min = [min_x - margin, min_y - margin]
+    env_max = [max_x + margin, max_y + margin]
+
+    return env_min, env_max
+
+
+def create_synthetic_env(solution, paths):
+    """Create a synthetic environment dict from DB-RRT solution data.
+
+    This allows visualization without a separate environment file.
+    """
+    env = {'environment': {}, 'robots': []}
+
+    # Compute bounds from trajectories
+    env_min, env_max = compute_bounds_from_paths(paths, margin=1.0)
+    env['environment']['min'] = env_min
+    env['environment']['max'] = env_max
+    env['environment']['obstacles'] = []
+
+    # Extract start/goal from solution if available, otherwise from paths
+    start = solution.get('start', None)
+    goal = solution.get('goal', None)
+    robot_type = solution.get('robotType', 'unicycle_first_order_0_sphere')
+
+    for i, path in enumerate(paths):
+        robot_config = {
+            'type': robot_type,
+            'name': f'Robot {i}',
+            'radius': 0.3,
+        }
+
+        # Get start from solution or first path state
+        if start is not None and len(start) >= 2:
+            robot_config['start'] = list(start)
+        elif path and len(path[0]) >= 2:
+            robot_config['start'] = list(path[0])
+        else:
+            robot_config['start'] = [0.0, 0.0, 0.0]
+
+        # Get goal from solution or last path state
+        if goal is not None and len(goal) >= 2:
+            robot_config['goal'] = list(goal)
+        elif path and len(path[-1]) >= 2:
+            robot_config['goal'] = list(path[-1])
+        else:
+            robot_config['goal'] = [1.0, 1.0, 0.0]
+
+        env['robots'].append(robot_config)
+
+    return env
 
 def get_robot_radius(robot_config):
     if 'radius' in robot_config:
@@ -157,27 +281,43 @@ def trail_points(path, waypoint_times, t):
     return xs, ys
 
 def interactive_animation(env_file, solution_file, initial_speed=1.0):
-    """Create an interactive visualization with a slider control"""
+    """Create an interactive visualization with a slider control
 
-    # Load environment and solution
-    env = load_yaml(env_file)
+    Args:
+        env_file: Path to environment YAML file (optional, can be None for DB-RRT format)
+        solution_file: Path to solution YAML file
+        initial_speed: Robot speed in map units per second
+    """
+
+    # Load solution
     solution = load_yaml(solution_file)
 
     if not solution or 'result' not in solution:
         print("Warning: No solution found in file")
         return
 
+    # Detect format
+    fmt = detect_format(solution)
+    print(f"Detected solution format: {fmt}")
+
+    # Extract paths using unified function
+    paths = extract_paths_from_solution(solution)
+
+    if not paths:
+        print("Warning: No valid paths found in solution")
+        return
+
+    # Load or create environment
+    if env_file:
+        env = load_yaml(env_file)
+    else:
+        # Create synthetic environment from solution data
+        print("No environment file provided, inferring from solution...")
+        env = create_synthetic_env(solution, paths)
+
     # Extract environment bounds
     env_min = env['environment']['min']
     env_max = env['environment']['max']
-
-    # Extract all paths
-    paths = []
-    for robot_idx, path_data in enumerate(solution['result']):
-        if 'states' in path_data and path_data['states']:
-            paths.append(path_data['states'])
-        else:
-            paths.append([])
 
     if initial_speed <= 0.0:
         initial_speed = 1.0
@@ -390,9 +530,20 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Interactive visualization for Multi-Robot SyCLoP solutions'
+        description='Interactive visualization for Multi-Robot SyCLoP solutions',
+        epilog='''
+Supported formats:
+  - mr_syclop format: requires --env file
+  - dynobench/DB-RRT format: --env is optional (bounds inferred from trajectory)
+
+Examples:
+  %(prog)s --env env.yaml --solution solution.yaml
+  %(prog)s --solution out_dbrrt.yaml
+  %(prog)s --solution out_dbrrt.yaml --env env.yaml --speed 2.0
+        '''
     )
-    parser.add_argument('--env', required=True, help='Environment YAML file')
+    parser.add_argument('--env', required=False, default=None,
+                        help='Environment YAML file (optional for DB-RRT format)')
     parser.add_argument('--solution', required=True, help='Solution YAML file')
     parser.add_argument('--speed', type=float, default=1.0,
                         help='Robot speed in map units per second (default: 1.0)')

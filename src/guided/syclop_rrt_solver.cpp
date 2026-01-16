@@ -1,4 +1,5 @@
 #include "syclop_rrt_solver.h"
+#include "robots.h"
 #include "robotStatePropagator.hpp"
 #include "fclStateValidityChecker.hpp"
 #include <ompl/base/goals/GoalState.h>
@@ -6,16 +7,18 @@
 #include <iostream>
 #include <chrono>
 
+namespace mr_syclop {
+
 SyclopRRTSolver::SyclopRRTSolver(
     const GuidedPlannerConfig& config,
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager)
-    : config_(config)
+    : GuidedPlanner(config)
     , collision_manager_(collision_manager)
 {
 }
 
 GuidedPlanningResult SyclopRRTSolver::solve(
-    std::shared_ptr<Robot> robot,
+    std::shared_ptr<::Robot> robot,
     oc::DecompositionPtr decomp,
     ob::State* start_state,
     ob::State* goal_state,
@@ -102,7 +105,7 @@ GuidedPlanningResult SyclopRRTSolver::solve(
 }
 
 void SyclopRRTSolver::setupOMPLComponents(
-    std::shared_ptr<Robot> robot,
+    std::shared_ptr<::Robot> robot,
     ob::State* start_state,
     ob::State* goal_state,
     oc::SpaceInformationPtr& si_out,
@@ -112,8 +115,10 @@ void SyclopRRTSolver::setupOMPLComponents(
     si_out = robot->getSpaceInformation();
 
     // Set state validity checker (robot-obstacle collisions only)
+    // Cast control::SpaceInformationPtr to base::SpaceInformationPtr
+    ob::SpaceInformationPtr base_si = std::static_pointer_cast<ob::SpaceInformation>(si_out);
     auto validity_checker = std::make_shared<fclStateValidityChecker>(
-        si_out, collision_manager_, robot, false);
+        base_si, collision_manager_, robot, false);
     si_out->setStateValidityChecker(validity_checker);
 
     // State propagator should already be set by MRSyCLoPPlanner
@@ -166,3 +171,5 @@ void SyclopRRTSolver::configurePlanner(oc::SyclopRRT& planner)
     planner.setProbShortestPathLead(config_.prob_shortest_path);
     planner.setRegionalNearestNeighbors(config_.use_regional_nn);
 }
+
+} // namespace mr_syclop

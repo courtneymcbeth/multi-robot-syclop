@@ -11,7 +11,7 @@
 #include "decomposition.h"
 #include "robots.h"
 #include "coupled_rrt.h"
-#include "guided/guided_planner.h"
+#include "guided/guided_planner.h"  // Includes dynobench::Obstacle
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
@@ -46,7 +46,8 @@ struct MRSyCLoPConfig {
 
     // Guided planner configuration
     std::string guided_planner_method = "syclop_rrt";
-    GuidedPlannerConfig guided_planner_config;
+    mr_syclop::GuidedPlannerConfig guided_planner_config;
+    mr_syclop::DBRRTConfig db_rrt_config;  // DB-RRT specific config
 
     // Segmentation configuration
     int segment_timesteps = 30;  // Number of timesteps per segment
@@ -154,7 +155,7 @@ public:
     // Accessors
     const std::vector<std::vector<int>>& getHighLevelPaths() const { return high_level_paths_; }
     const oc::DecompositionPtr& getDecomposition() const { return decomp_; }
-    const std::vector<GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
+    const std::vector<mr_syclop::GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
     const std::vector<std::vector<PathSegment>>& getPathSegments() const { return path_segments_; }
     const std::vector<std::shared_ptr<Robot>>& getRobots() const { return robots_; }
     const std::vector<SegmentCollision>& getCollisions() const { return segment_collisions_; }
@@ -183,7 +184,7 @@ private:
 
     // Planning state
     std::vector<std::vector<int>> high_level_paths_;
-    std::vector<GuidedPlanningResult> guided_planning_results_;
+    std::vector<mr_syclop::GuidedPlanningResult> guided_planning_results_;
     std::vector<std::vector<PathSegment>> path_segments_;  // Segments for each robot
     std::vector<SegmentCollision> segment_collisions_;     // Detected collisions
     bool problem_loaded_ = false;
@@ -191,9 +192,13 @@ private:
     // Collision manager for obstacles (shared with guided planners)
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager_;
 
+    // Precomputed dynobench obstacles (for DB-RRT solver)
+    std::vector<dynobench::Obstacle> dynobench_obstacles_;
+
     // Helper methods
     void setupDecomposition();
     void setupCollisionManager();
+    void setupDynobenchObstacles();  // Convert FCL obstacles to dynobench format
     void setupRobots();
     void cleanup();
     std::vector<fcl::CollisionObjectf*> getObstaclesInRegion(
@@ -239,7 +244,7 @@ private:
         PathUpdateInfo& update_info_2);
     void integrateRefinedPaths(
         const std::vector<size_t>& robot_indices,
-        const std::vector<GuidedPlanningResult>& local_results,
+        const std::vector<mr_syclop::GuidedPlanningResult>& local_results,
         const PathUpdateInfo& update_info_1,
         const PathUpdateInfo& update_info_2);
     void recheckCollisionsFromTimestep(int start_timestep);
