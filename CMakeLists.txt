@@ -55,11 +55,15 @@ add_library(mapf_solver_lib
 target_link_libraries(mapf_solver_lib
   PUBLIC ompl
   PUBLIC ${Boost_LIBRARIES}
+  PUBLIC Eigen3::Eigen
+  PUBLIC ${FCL_LIBRARIES}
 )
 target_include_directories(mapf_solver_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
   ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
+  ${EIGEN3_INCLUDE_DIR}
+  ${FCL_INCLUDE_DIRS}
 )
 # target_compile_options(mapf_solver_lib PRIVATE -g -O0)
 

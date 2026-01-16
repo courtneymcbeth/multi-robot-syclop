@@ -1,9 +1,11 @@
 #include "mapf_cbs.h"
+#include "../decomposition.h"
 #include <boost/graph/astar_search.hpp>
 #include <queue>
 #include <iostream>
 #include <stdexcept>
 #include <tuple>
+#include <set>
 
 // Uncomment for debug output
 // #define CBS_DEBUG
@@ -28,7 +30,9 @@ CBSMAPFSolver::CBSMAPFSolver(int region_capacity, double timeout)
 std::vector<std::vector<int>> CBSMAPFSolver::solve(
     oc::DecompositionPtr decomp,
     const std::vector<ob::State*>& start_states,
-    const std::vector<ob::State*>& goal_states)
+    const std::vector<ob::State*>& goal_states,
+    const std::vector<fcl::CollisionObjectf*>& obstacles,
+    double max_obstacle_volume_percent)
 {
     auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -36,8 +40,14 @@ std::vector<std::vector<int>> CBSMAPFSolver::solve(
     std::cout << "CBS: Starting solve for " << start_states.size() << " robots" << std::endl;
 #endif
 
-    // Build region graph
-    RegionGraph graph = buildRegionGraph(decomp);
+    // We need access to region bounds to validate start/goal regions
+    auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(decomp);
+    if (!grid_decomp) {
+        throw std::runtime_error("CBSMAPFSolver: Decomposition must be GridDecompositionImpl");
+    }
+
+    // Build region graph (filters invalid regions)
+    RegionGraph graph = buildRegionGraph(decomp, obstacles, max_obstacle_volume_percent);
 
     // Initialize root CT node
     CTNode root;
@@ -63,6 +73,30 @@ std::vector<std::vector<int>> CBSMAPFSolver::solve(
         if (goal_region < 0) {
             throw std::runtime_error("CBS: Goal state for robot " + std::to_string(i) +
                                      " is outside decomposition bounds (region=" + std::to_string(goal_region) + ")");
+        }
+
+        // Validate start region obstacle volume
+        const auto& start_bounds = grid_decomp->getRegionBoundsPublic(start_region);
+        double start_obstacle_percent = computeObstacleVolumePercent(start_bounds, obstacles);
+        if (start_obstacle_percent > max_obstacle_volume_percent) {
+            throw std::runtime_error(
+                "CBSMAPFSolver: Start region " + std::to_string(start_region) +
+                " for robot " + std::to_string(i) +
+                " has " + std::to_string(start_obstacle_percent * 100.0) +
+                "% obstacle volume, exceeding threshold of " +
+                std::to_string(max_obstacle_volume_percent * 100.0) + "%");
+        }
+
+        // Validate goal region obstacle volume
+        const auto& goal_bounds = grid_decomp->getRegionBoundsPublic(goal_region);
+        double goal_obstacle_percent = computeObstacleVolumePercent(goal_bounds, obstacles);
+        if (goal_obstacle_percent > max_obstacle_volume_percent) {
+            throw std::runtime_error(
+                "CBSMAPFSolver: Goal region " + std::to_string(goal_region) +
+                " for robot " + std::to_string(i) +
+                " has " + std::to_string(goal_obstacle_percent * 100.0) +
+                "% obstacle volume, exceeding threshold of " +
+                std::to_string(max_obstacle_volume_percent * 100.0) + "%");
         }
 
         try {
@@ -170,20 +204,48 @@ std::vector<std::vector<int>> CBSMAPFSolver::solve(
 // Graph Construction
 // ============================================================================
 
-RegionGraph CBSMAPFSolver::buildRegionGraph(oc::DecompositionPtr decomp)
+RegionGraph CBSMAPFSolver::buildRegionGraph(
+    oc::DecompositionPtr decomp,
+    const std::vector<fcl::CollisionObjectf*>& obstacles,
+    double max_obstacle_volume_percent)
 {
     int num_regions = decomp->getNumRegions();
     RegionGraph graph(num_regions);
 
-    // Add edges between adjacent regions
+    // We need access to region bounds to filter by obstacle volume
+    auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(decomp);
+    if (!grid_decomp) {
+        throw std::runtime_error("CBSMAPFSolver: Decomposition must be GridDecompositionImpl");
+    }
+
+    // Build a set of valid regions (those with acceptable obstacle volume)
+    std::set<int> valid_regions;
     for (int i = 0; i < num_regions; ++i) {
+        const auto& region_bounds = grid_decomp->getRegionBoundsPublic(i);
+        double obstacle_percent = computeObstacleVolumePercent(region_bounds, obstacles);
+
+        if (obstacle_percent <= max_obstacle_volume_percent) {
+            valid_regions.insert(i);
+        }
+    }
+
+    // Add edges only between valid regions
+    for (int i = 0; i < num_regions; ++i) {
+        // Skip invalid regions
+        if (valid_regions.find(i) == valid_regions.end()) {
+            continue;
+        }
+
         std::vector<int> neighbors;
         decomp->getNeighbors(i, neighbors);
 
         for (int neighbor : neighbors) {
-            EdgeProperty ep;
-            ep.weight = 1.0;  // Uniform cost
-            boost::add_edge(i, neighbor, ep, graph);
+            // Only add edge if neighbor is also valid
+            if (valid_regions.find(neighbor) != valid_regions.end()) {
+                EdgeProperty ep;
+                ep.weight = 1.0;  // Uniform cost
+                boost::add_edge(i, neighbor, ep, graph);
+            }
         }
     }
 

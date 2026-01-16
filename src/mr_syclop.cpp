@@ -182,7 +182,9 @@ void MRSyCLoPPlanner::computeHighLevelPaths()
         config_.mapf_config.region_capacity,
         config_.planning_time_limit);
 
-    high_level_paths_ = mapf_solver->solve(decomp_, start_states_, goal_states_);
+    high_level_paths_ = mapf_solver->solve(
+        decomp_, start_states_, goal_states_,
+        obstacles_, config_.mapf_config.max_obstacle_volume_percent);
 
 #ifdef DBG_PRINTS
     std::cout << "High-level paths computed using "
@@ -1412,7 +1414,9 @@ bool MRSyCLoPPlanner::resolveWithDecompositionRefinement(
             config_.mapf_config.region_capacity,
             config_.planning_time_limit);
 
-        auto local_high_level_paths = mapf_solver->solve(local_decomp, local_starts, local_goals);
+        auto local_high_level_paths = mapf_solver->solve(
+            local_decomp, local_starts, local_goals,
+            obstacles_, config_.mapf_config.max_obstacle_volume_percent);
 
         if (local_high_level_paths.empty() ||
             local_high_level_paths[0].empty() ||
@@ -1583,7 +1587,9 @@ bool MRSyCLoPPlanner::resolveWithSubproblemExpansion(
         std::vector<ob::State*> local_goals = {update_info_1.exit_state,
                                                 update_info_2.exit_state};
 
-        auto local_high_level_paths = mapf_solver->solve(planning_decomp, local_starts, local_goals);
+        auto local_high_level_paths = mapf_solver->solve(
+            planning_decomp, local_starts, local_goals,
+            obstacles_, config_.mapf_config.max_obstacle_volume_percent);
 
         if (local_high_level_paths.empty() ||
             local_high_level_paths[0].empty() ||
@@ -1994,6 +2000,9 @@ int main(int argc, char* argv[]) {
             if (cfg["mapf"]["region_capacity"]) {
                 config.mapf_config.region_capacity = cfg["mapf"]["region_capacity"].as<int>();
             }
+            if (cfg["mapf"]["max_obstacle_volume_percent"]) {
+                config.mapf_config.max_obstacle_volume_percent = cfg["mapf"]["max_obstacle_volume_percent"].as<double>();
+            }
         }
 
         // Set coupled RRT config if needed
@@ -2005,6 +2014,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  Segment timesteps: " << config.segment_timesteps << std::endl;
         std::cout << "  MAPF method: " << config.mapf_config.method << std::endl;
         std::cout << "  MAPF region capacity: " << config.mapf_config.region_capacity << std::endl;
+        std::cout << "  MAPF max obstacle volume: " << (config.mapf_config.max_obstacle_volume_percent * 100.0) << "%" << std::endl;
 
         // Load problem description
         std::cout << "Loading problem description..." << std::endl;

@@ -23,6 +23,7 @@ namespace oc = ompl::control;
 struct MAPFConfig {
     std::string method = "decoupled";  // Options: "decoupled", "astar", "cbs"
     int region_capacity = 1;           // Robots per vertex/edge (for CBS)
+    double max_obstacle_volume_percent = 0.5;  // Maximum obstacle volume in a region (0.0 to 1.0)
 };
 
 struct CollisionResolutionConfig {

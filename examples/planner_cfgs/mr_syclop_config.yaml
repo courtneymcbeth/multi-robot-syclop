@@ -14,3 +14,4 @@ segment_timesteps: 30      # Number of timesteps per segment
 mapf:
   method: "cbs"           # Options: "decoupled", "astar", "cbs"
   region_capacity: 2      # Maximum robots per region (vertex/edge)
+  max_obstacle_volume_percent: 0.5  # Maximum percentage of obstacle volume in a region before it is considered blocked
