@@ -177,6 +177,7 @@ public:
 
     // Set algorithm parameters
     void setExpansionsPerIteration(unsigned int n_it) { n_it_ = n_it; }
+    void setSeed(int seed);
 
     // Run the planner
     bool solve(double max_time);

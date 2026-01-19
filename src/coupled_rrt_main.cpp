@@ -13,6 +13,9 @@
 // Boost program options
 #include <boost/program_options.hpp>
 
+// OMPL random number generator
+#include <ompl/util/RandomNumbers.h>
+
 // Standard library
 #include <iostream>
 #include <fstream>
@@ -106,6 +109,9 @@ CoupledRRTConfig loadConfigFromYAML(const std::string& configFile)
         }
         if (cfg["max_control_duration"]) {
             config.max_control_duration = cfg["max_control_duration"].as<int>();
+        }
+        if (cfg["seed"]) {
+            config.seed = cfg["seed"].as<int>();
         }
     } catch (const YAML::Exception& e) {
         std::cerr << "ERROR loading config file: " << e.what() << std::endl;
@@ -243,6 +249,14 @@ int main(int argc, char** argv)
         if (vm.count("cfg")) {
             config = loadConfigFromYAML(configFile);
             config.time_limit = timelimit; // Command line overrides config file
+        }
+
+        // Set the random seed
+        if (config.seed >= 0) {
+            std::cout << "Setting random seed to: " << config.seed << std::endl;
+            ompl::RNG::setSeed(config.seed);
+        } else {
+            std::cout << "Using random seed" << std::endl;
         }
 
         // Load problem from YAML

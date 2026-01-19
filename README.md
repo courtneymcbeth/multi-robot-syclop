@@ -338,6 +338,157 @@ python examples/visualize_planning_stages.py --env examples/simple_2robots.yaml 
 
 Use navigation buttons to step through planning stages.
 
+## Running Experiments
+
+The `experiments/` directory contains a Python framework for systematic benchmarking of all planners.
+
+### Quick Start
+
+```bash
+cd experiments/
+
+# Generate test scenarios
+python3 generate_scenarios.py --type empty --size 20 20 --name open_20x20
+python3 generate_scenarios.py --type corridor --width 40 --height 10 --name corridor_40x10
+python3 generate_scenarios.py --type random --size 30 30 --density 0.15 --name cluttered_30x30
+
+# Run experiments (adaptive scaling - increases robots until all seeds fail)
+python3 run_experiments.py
+
+# Or with custom parameters
+python3 run_experiments.py --seeds 5 --timeout 120 --scenarios open_20x20 --planners arc mr_syclop
+```
+
+### Experiment Framework Components
+
+| Script | Purpose |
+|--------|---------|
+| `generate_scenarios.py` | Create test environments (empty, random, corridor, grid, rooms) |
+| `visualize_problem.py` | Debug visualization for environments and solutions |
+| `run_experiments.py` | Adaptive batch runner with seed control |
+| `parse_results.py` | Extract metrics from planner output YAML |
+| `aggregate_results.py` | Compute statistics across seeds |
+| `plot_results.py` | Generate comparison plots |
+
+### Creating Scenarios
+
+```bash
+# Empty environment
+python3 generate_scenarios.py --type empty --size 20 20 --name my_empty
+
+# Random obstacles (15% coverage)
+python3 generate_scenarios.py --type random --size 30 30 --density 0.15 --name my_random
+
+# Corridor with gaps
+python3 generate_scenarios.py --type corridor --width 40 --height 10 --corridor-width 4 --name my_corridor
+
+# Grid pattern
+python3 generate_scenarios.py --type grid --size 20 20 --grid-size 4 --name my_grid
+
+# Rooms with doors
+python3 generate_scenarios.py --type rooms --size 20 20 --rooms-x 2 --rooms-y 2 --name my_rooms
+
+# List all scenario types
+python3 generate_scenarios.py --list-types
+```
+
+### Visualizing Problems
+
+```bash
+# View a scenario (environment only)
+python3 visualize_problem.py scenarios/open_20x20.yaml
+
+# View a problem instance (environment + robot positions)
+python3 visualize_problem.py problems/open_20x20/robots_4/seed_0.yaml
+
+# View a solution
+python3 visualize_problem.py problems/open_20x20/robots_4/seed_0.yaml --solution results/open_20x20/arc/robots_4/seed_0.yaml
+
+# Save to file
+python3 visualize_problem.py scenarios/corridor_40x10.yaml -o corridor.png
+```
+
+### Configuration
+
+Edit `experiments/config.yaml` to configure experiments:
+
+```yaml
+# Experiment parameters
+num_seeds: 10           # Random seeds per configuration
+timeout: 300            # Time limit per run (seconds)
+start_robots: 2         # Starting number of robots
+robot_increment: 2      # Increase by 2 each iteration
+robot_type: unicycle_first_order_0_sphere
+
+# Scenarios to run
+scenarios:
+  - open_20x20
+  - corridor_40x10
+
+# Planners to test
+planners:
+  arc:
+    executable: ../build/arc
+    config: ../examples/planner_cfgs/arc_config.yaml
+  mr_syclop:
+    executable: ../build/mr_syclop
+    config: ../examples/planner_cfgs/mr_syclop_config.yaml
+  # ... more planners
+```
+
+### Adaptive Scaling
+
+The experiment runner uses adaptive scaling:
+1. Starts with 2 robots
+2. Runs all seeds (default 10)
+3. If **any seed succeeds**, increases to 4 robots
+4. Continues until **all seeds fail** at some robot count
+5. Stops testing that (scenario, planner) pair
+
+This saves computation time by not testing configurations that are clearly beyond a planner's capability.
+
+### Analyzing Results
+
+```bash
+# Parse raw results into CSV
+python3 parse_results.py results/ -o analysis/results.csv
+
+# Aggregate statistics across seeds
+python3 aggregate_results.py results/ -o analysis/summary.csv
+
+# Print summary table
+python3 aggregate_results.py results/
+
+# Generate all plots
+python3 plot_results.py analysis/summary.csv -o analysis/plots/
+```
+
+### Output Structure
+
+```
+experiments/
+├── scenarios/           # Base environments (no robots)
+│   ├── open_20x20.yaml
+│   └── corridor_40x10.yaml
+├── problems/            # Generated problem instances
+│   └── {scenario}/robots_{N}/seed_{S}.yaml
+├── results/             # Planner outputs
+│   └── {scenario}/{planner}/robots_{N}/seed_{S}.yaml
+├── analysis/            # Aggregated results and plots
+│   ├── summary.csv
+│   └── plots/
+└── configs/             # Per-seed planner configs
+    └── {planner}/seed_{S}.yaml
+```
+
+### Seed Control
+
+All planners support deterministic execution via the `seed` parameter in their config files:
+- `seed: 42` - Use seed 42 for reproducible results
+- `seed: -1` - Use random seed
+
+The experiment runner automatically injects seeds into planner configs to ensure reproducibility.
+
 ## Source Files
 
 - [src/arc.cpp](src/arc.cpp): ARC planner implementation
@@ -349,3 +500,4 @@ Use navigation buttons to step through planning stages.
 - [src/decomposition.cpp](src/decomposition.cpp): Workspace decomposition
 - [src/mapf/](src/mapf/): Multi-agent path finding solvers
 - [src/guided/](src/guided/): Guided kinodynamic planners
+- [experiments/](experiments/): Experiment framework for benchmarking

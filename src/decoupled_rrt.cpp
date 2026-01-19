@@ -25,6 +25,7 @@
 #include <ompl/base/StateValidityChecker.h>
 #include <ompl/base/PlannerTerminationCondition.h>
 #include <ompl/base/goals/GoalRegion.h>
+#include <ompl/util/RandomNumbers.h>
 
 // FCL
 #include <fcl/fcl.h>
@@ -232,6 +233,7 @@ int main(int argc, char** argv)
     int min_control_duration = 1;
     int max_control_duration = 10;
     double propagation_step_size = 0.1;
+    int seed = -1;
 
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -273,6 +275,9 @@ int main(int argc, char** argv)
             if (cfg["propagation_step_size"]) {
                 propagation_step_size = cfg["propagation_step_size"].as<double>();
             }
+            if (cfg["seed"]) {
+                seed = cfg["seed"].as<int>();
+            }
         } catch (const YAML::Exception& e) {
             std::cerr << "ERROR loading config file: " << e.what() << std::endl;
             return 1;
@@ -281,6 +286,14 @@ int main(int argc, char** argv)
 
     std::cout << "Decoupled RRT (Prioritized Planning) for Multi-Robot Systems" << std::endl;
     std::cout << "=============================================================" << std::endl;
+
+    // Set the random seed
+    if (seed >= 0) {
+        std::cout << "Setting random seed to: " << seed << std::endl;
+        ompl::RNG::setSeed(seed);
+    } else {
+        std::cout << "Using random seed" << std::endl;
+    }
 
     // Load YAML configuration
     std::cout << "Loading YAML file: " << inputFile << std::endl;

@@ -27,6 +27,7 @@ struct ARCConfig {
     // Overall planning parameters
     double time_limit = 60.0;
     double goal_threshold = 0.5;
+    int seed = -1;  // Random seed (-1 for random)
 
     // Subproblem configuration
     int initial_time_window = 10;          // Initial timesteps before/after conflict
