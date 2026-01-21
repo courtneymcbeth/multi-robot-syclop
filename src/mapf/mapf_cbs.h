@@ -100,7 +100,9 @@ public:
     std::vector<std::vector<int>> solve(
         oc::DecompositionPtr decomp,
         const std::vector<ob::State*>& start_states,
-        const std::vector<ob::State*>& goal_states) override;
+        const std::vector<ob::State*>& goal_states,
+        const std::vector<fcl::CollisionObjectf*>& obstacles,
+        double max_obstacle_volume_percent) override;
 
     std::string getName() const override { return "CBS"; }
 
@@ -109,7 +111,10 @@ private:
     double timeout_;       // Maximum planning time in seconds
 
     // Graph construction
-    RegionGraph buildRegionGraph(oc::DecompositionPtr decomp);
+    RegionGraph buildRegionGraph(
+        oc::DecompositionPtr decomp,
+        const std::vector<fcl::CollisionObjectf*>& obstacles,
+        double max_obstacle_volume_percent);
     void getNeighbors(const RegionGraph& graph, int region, std::vector<int>& neighbors);
 
     // High-level CBS

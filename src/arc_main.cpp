@@ -13,6 +13,9 @@
 // Boost program options
 #include <boost/program_options.hpp>
 
+// OMPL random number generator
+#include <ompl/util/RandomNumbers.h>
+
 // Standard library
 #include <iostream>
 #include <fstream>
@@ -138,6 +141,11 @@ ARCConfig loadConfigFromYAML(const std::string& configFile)
         // Termination
         if (cfg["max_conflicts_resolved"]) {
             config.max_conflicts_resolved = cfg["max_conflicts_resolved"].as<int>();
+        }
+
+        // Random seed
+        if (cfg["seed"]) {
+            config.seed = cfg["seed"].as<int>();
         }
 
     } catch (const YAML::Exception& e) {
@@ -276,6 +284,14 @@ int main(int argc, char** argv)
             config.time_limit = timelimit; // Command line overrides config file
         }
 
+        // Set the random seed
+        if (config.seed >= 0) {
+            std::cout << "Setting random seed to: " << config.seed << std::endl;
+            ompl::RNG::setSeed(config.seed);
+        } else {
+            std::cout << "Using random seed" << std::endl;
+        }
+
         // Print configuration
         std::cout << "\n=== ARC Configuration ===" << std::endl;
         std::cout << "Time limit: " << config.time_limit << " seconds" << std::endl;
@@ -283,6 +299,7 @@ int main(int argc, char** argv)
         std::cout << "Initial time window: " << config.initial_time_window << " timesteps" << std::endl;
         std::cout << "Max subproblem expansions: " << config.max_subproblem_expansions << std::endl;
         std::cout << "States per check: " << config.states_per_check << std::endl;
+        std::cout << "Seed: " << config.seed << std::endl;
         std::cout << "=========================\n" << std::endl;
 
         // Load problem from YAML

@@ -16,6 +16,7 @@
 #include <ompl/base/spaces/SE2StateSpace.h>
 #include <ompl/base/ScopedState.h>
 #include <ompl/geometric/planners/prm/SPARStwo.h>
+#include <ompl/util/RandomNumbers.h>
 
 #include "robots.h"
 
@@ -311,6 +312,13 @@ DiscreteRRTPlanner::DiscreteRRTPlanner(
     }
     if (!robots_.empty() && robots_.size() != roadmaps_.size()) {
         throw std::runtime_error("Number of robots must match number of roadmaps");
+    }
+}
+
+void DiscreteRRTPlanner::setSeed(int seed)
+{
+    if (seed >= 0) {
+        rng_ = std::mt19937(seed);
     }
 }
 
@@ -820,6 +828,7 @@ int main(int argc, char** argv) {
     double time_limit = 60.0;
     double roadmap_time = 10.0;
     unsigned int expansions_per_iter = 5;
+    int seed = -1;
     IndividualRoadmap::SparsParams spars_params;
 
     po::options_description desc("Discrete-RRT Multi-Robot Motion Planning");
@@ -872,10 +881,21 @@ int main(int argc, char** argv) {
                 spars_params.has_stretch_factor = true;
                 spars_params.stretch_factor = cfg["spars_stretch_factor"].as<double>();
             }
+            if (cfg["seed"]) {
+                seed = cfg["seed"].as<int>();
+            }
         } catch (const YAML::Exception& e) {
             std::cerr << "ERROR loading config file: " << e.what() << std::endl;
             return 1;
         }
+    }
+
+    // Set the random seed
+    if (seed >= 0) {
+        std::cout << "Setting random seed to: " << seed << std::endl;
+        ompl::RNG::setSeed(seed);
+    } else {
+        std::cout << "Using random seed" << std::endl;
     }
 
     std::cout << "Discrete-RRT Multi-Robot Motion Planning" << std::endl;
@@ -1016,6 +1036,7 @@ int main(int argc, char** argv) {
     // Create discrete-RRT planner
     std::cout << "Initializing discrete-RRT planner..." << std::endl;
     DiscreteRRTPlanner planner(roadmaps, space_infos, robots);
+    planner.setSeed(seed);
     planner.setStartGoal(start_indices, goal_indices);
     planner.setExpansionsPerIteration(expansions_per_iter);
     std::cout << std::endl;

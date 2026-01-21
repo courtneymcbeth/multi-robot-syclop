@@ -16,6 +16,7 @@
 #include <ompl/base/spaces/SE2StateSpace.h>
 #include <ompl/base/spaces/RealVectorBounds.h>
 #include <ompl/tools/config/SelfConfig.h>
+#include <ompl/util/RandomNumbers.h>
 #include "../db-CBS/src/robots.h"
 #include "../db-CBS/src/fclStateValidityChecker.hpp"
 
@@ -987,6 +988,18 @@ int main(int argc, char* argv[]) {
     double edge_check_step_cfg = -1.0;
     if (cfg["edge_check_step"]) {
         edge_check_step_cfg = cfg["edge_check_step"].as<double>();
+    }
+    int seed = -1;
+    if (cfg["seed"]) {
+        seed = cfg["seed"].as<int>();
+    }
+
+    // Set the random seed
+    if (seed >= 0) {
+        std::cout << "  Setting random seed to: " << seed << std::endl;
+        ompl::RNG::setSeed(seed);
+    } else {
+        std::cout << "  Using random seed" << std::endl;
     }
 
     std::cout << "  Max distance: " << max_distance << std::endl;

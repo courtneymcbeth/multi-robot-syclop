@@ -21,6 +21,7 @@ struct CoupledRRTConfig {
     double goal_threshold = 0.5;
     int min_control_duration = 1;
     int max_control_duration = 10;
+    int seed = -1;  // Random seed (-1 for random)
 };
 
 // ============================================================================

@@ -27,12 +27,17 @@ public:
     std::vector<std::vector<int>> solve(
         oc::DecompositionPtr decomp,
         const std::vector<ob::State*>& start_states,
-        const std::vector<ob::State*>& goal_states) override;
+        const std::vector<ob::State*>& goal_states,
+        const std::vector<fcl::CollisionObjectf*>& obstacles,
+        double max_obstacle_volume_percent) override;
 
     std::string getName() const override { return "Decoupled A*"; }
 
 private:
-    RegionGraph buildRegionGraph(oc::DecompositionPtr decomp);
+    RegionGraph buildRegionGraph(
+        oc::DecompositionPtr decomp,
+        const std::vector<fcl::CollisionObjectf*>& obstacles,
+        double max_obstacle_volume_percent);
 
     std::vector<int> findPathAStar(
         const RegionGraph& graph,
