@@ -27,7 +27,7 @@ guided_planner:
   time_per_robot: 10.0
 
   # Debug output
-  debug: true
+  debug: false
 
   # SyclopRRT-specific parameters (only used if guided_planner_method: "syclop_rrt")
   num_free_volume_samples: 100000
@@ -52,10 +52,10 @@ guided_planner:
     delta: 0.3                # Step size for extension
     goal_bias: 0.1            # Probability of sampling goal
     max_motions: 1000         # Maximum motion primitives to load
-    seed: -1                  # Random seed (-1 for random)
+    seed: 100
 
     # Optimization
-    do_optimization: true    # Enable trajectory optimization
+    do_optimization: false    # Enable trajectory optimization
     solver_id: 0              # Trajectory optimizer solver ID
 
     # Advanced parameters

@@ -1,5 +1,7 @@
 #include "mapf_decoupled.h"
 #include <boost/graph/astar_search.hpp>
+#include <stdexcept>
+#include <iostream>
 
 // ============================================================================
 // Helper structures for A* search
@@ -67,6 +69,7 @@ std::vector<int> DecoupledMAPFSolver::findPathAStar(
     std::vector<Vertex> parents(num_regions);
     std::vector<double> distances(num_regions);
 
+    bool found = false;
     try {
         boost::astar_search(graph, boost::vertex(start_region, graph),
                             SimpleHeuristic(),
@@ -77,6 +80,7 @@ std::vector<int> DecoupledMAPFSolver::findPathAStar(
                                                                                     boost::get(boost::vertex_index, graph)))
                                 .visitor(GoalVisitor(goal_region)));
     } catch (found_goal) {
+        found = true;
         // Reconstruct the path from start to goal
         int region = goal_region;
         int path_length = 1;
@@ -94,6 +98,12 @@ std::vector<int> DecoupledMAPFSolver::findPathAStar(
         }
     }
 
+    if (!found) {
+        throw std::runtime_error("Decoupled A*: No path found from region " +
+                                 std::to_string(start_region) + " to region " +
+                                 std::to_string(goal_region));
+    }
+
     return path;
 }
 
@@ -107,12 +117,29 @@ std::vector<std::vector<int>> DecoupledMAPFSolver::solve(
 
     // Build the region graph from the decomposition
     RegionGraph graph = buildRegionGraph(decomp);
+    int num_regions = decomp->getNumRegions();
 
     // Iterate over each robot and find independent paths
     for (size_t robot_idx = 0; robot_idx < start_states.size(); ++robot_idx) {
         // Get the region IDs for the start and goal states
         int start_region = decomp->locateRegion(start_states[robot_idx]);
         int goal_region = decomp->locateRegion(goal_states[robot_idx]);
+
+        // Validate that regions are valid
+        if (start_region < 0 || start_region >= num_regions) {
+            throw std::runtime_error("Decoupled A*: Start state for robot " +
+                                     std::to_string(robot_idx) +
+                                     " is outside decomposition bounds (region=" +
+                                     std::to_string(start_region) + ", num_regions=" +
+                                     std::to_string(num_regions) + ")");
+        }
+        if (goal_region < 0 || goal_region >= num_regions) {
+            throw std::runtime_error("Decoupled A*: Goal state for robot " +
+                                     std::to_string(robot_idx) +
+                                     " is outside decomposition bounds (region=" +
+                                     std::to_string(goal_region) + ", num_regions=" +
+                                     std::to_string(num_regions) + ")");
+        }
 
         // Find path using A*
         high_level_paths[robot_idx] = findPathAStar(graph, start_region, goal_region);

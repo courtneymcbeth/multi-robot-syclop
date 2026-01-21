@@ -1,0 +1,23 @@
+# 4-robot scenario in a 30x30 environment
+# Robots navigate around obstacles to reach their goals
+
+environment:
+  min: [0.0, 0.0]
+  max: [30.0, 30.0]
+  obstacles: []
+robots:
+  - type: unicycle_first_order_0_sphere
+    start: [2.0, 2.0, 0.0]  # [x, y, theta]
+    goal: [28.0, 28.0, 0.0]
+
+  - type: unicycle_first_order_0_sphere
+    start: [28.0, 2.0, 0.0]
+    goal: [2.0, 28.0, 0.0]
+
+  - type: unicycle_first_order_0_sphere
+    start: [2.0, 28.0, 0.0]
+    goal: [28.0, 2.0, 0.0]
+
+  - type: unicycle_first_order_0_sphere
+    start: [28.0, 28.0, 0.0]
+    goal: [2.0, 2.0, 0.0]

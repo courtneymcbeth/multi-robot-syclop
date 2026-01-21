@@ -144,6 +144,71 @@ private:
      */
     std::string getRobotType(const std::shared_ptr<::Robot>& robot);
 
+    // =========================================================================
+    // SYCLOP-style region guidance methods
+    // =========================================================================
+
+    /**
+     * @brief Solve using SYCLOP-style waypoint planning through regions
+     *
+     * This method plans through intermediate waypoints sampled from regions
+     * along the high-level MAPF path, similar to how SyclopRRT follows its lead.
+     */
+    GuidedPlanningResult solveWithRegionGuidance(
+        std::shared_ptr<::Robot> robot,
+        oc::DecompositionPtr decomp,
+        ob::State* start_state,
+        ob::State* goal_state,
+        const std::vector<int>& region_path,
+        size_t robot_index);
+
+    /**
+     * @brief Get the center point of a region in the decomposition
+     */
+    Eigen::VectorXd getRegionCenter(int region_id, const oc::DecompositionPtr& decomp);
+
+    /**
+     * @brief Sample a random point within a region
+     */
+    Eigen::VectorXd sampleInRegion(int region_id, const oc::DecompositionPtr& decomp);
+
+    /**
+     * @brief Check if a state is within a given region
+     */
+    bool isStateInRegion(const Eigen::VectorXd& state, int region_id,
+                         const oc::DecompositionPtr& decomp);
+
+    /**
+     * @brief Find the current lead region index based on robot state
+     */
+    size_t findCurrentLeadIndex(const Eigen::VectorXd& state,
+                                const std::vector<int>& region_path,
+                                const oc::DecompositionPtr& decomp);
+
+    /**
+     * @brief Create intermediate waypoint goal from region
+     */
+    Eigen::VectorXd createWaypointGoal(int region_id,
+                                       const Eigen::VectorXd& current_state,
+                                       const Eigen::VectorXd& final_goal,
+                                       const oc::DecompositionPtr& decomp);
+
+    /**
+     * @brief Plan a single segment from current state toward a waypoint
+     */
+    std::pair<bool, dynobench::Trajectory> planSegmentToWaypoint(
+        const std::shared_ptr<::Robot>& robot,
+        const Eigen::VectorXd& start,
+        const Eigen::VectorXd& waypoint,
+        const oc::DecompositionPtr& decomp,
+        double time_budget);
+
+    /**
+     * @brief Concatenate multiple trajectory segments
+     */
+    dynobench::Trajectory concatenateTrajectories(
+        const std::vector<dynobench::Trajectory>& segments);
+
     /**
      * @brief Get state bounds from Robot (includes all dimensions including orientation)
      */

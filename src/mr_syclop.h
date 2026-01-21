@@ -35,6 +35,7 @@ struct CollisionResolutionConfig {
 
 struct MRSyCLoPConfig {
     int decomposition_region_length = 1;
+    std::vector<int> decomposition_resolution = {10, 10, 1};  // Grid cells in [x, y, z]
     double planning_time_limit = 60.0;
     int seed = -1;  // Random seed (-1 for random)
 
@@ -150,7 +151,7 @@ public:
     void computeGuidedPaths();
     void segmentGuidedPaths();
     bool checkSegmentsForCollisions();  // Checks robot-robot collisions only; obstacle avoidance is handled by guided planner
-    void resolveCollisions();
+    bool resolveCollisions();  // Returns true if all collisions were resolved
 
     // Accessors
     const std::vector<std::vector<int>>& getHighLevelPaths() const { return high_level_paths_; }
@@ -224,6 +225,7 @@ private:
 
     // Collision resolution - modular strategy system
     bool resolveCollisionWithStrategies(const SegmentCollision& collision);
+    bool collisionPersistsForRobots(size_t robot_1, size_t robot_2, int timestep) const;
 
     // Strategy implementations
     bool resolveWithDecompositionRefinement(const SegmentCollision& collision, int max_attempts);
