@@ -34,6 +34,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <map>
 #include <memory>
 #include <chrono>
 
@@ -51,6 +52,14 @@ namespace oc = ompl::control;
 namespace omrb = ompl::multirobot::base;
 namespace omrc = ompl::multirobot::control;
 namespace po = boost::program_options;
+
+// ============================================================================
+// Global registry to map SpaceInformation to Robot objects
+// This is needed because areStatesValid() receives another robot's SpaceInformation
+// but we need the Robot object to get its collision geometry
+// ============================================================================
+
+std::map<const ob::SpaceInformation*, std::shared_ptr<Robot>> g_robot_registry;
 
 // ============================================================================
 // IndividualStatePropagator - propagates a single robot using its dynamics
@@ -131,11 +140,23 @@ public:
         const ob::State* state1,
         const std::pair<const ob::SpaceInformationPtr, const ob::State*> state2) const override
     {
-        // Get the other robot's information
-        // We need to extract the Robot object from the other SpaceInformation
-        // For now, we'll do FCL-based collision checking directly
+        // Look up the other robot from the global registry using its SpaceInformation
+        auto it = g_robot_registry.find(state2.first.get());
+        if (it == g_robot_registry.end()) {
+            // Fallback: if we can't find the robot, log a warning and return true
+            // This should not happen if the registry is properly populated
+            std::cerr << "Warning: Could not find robot in registry for collision check" << std::endl;
+            return true;
+        }
+        const std::shared_ptr<Robot>& other_robot = it->second;
 
-        // Check all parts of this robot against all parts of the other robot
+        static int call_count = 0;
+        call_count++;
+        if (call_count % 100000 == 0) {
+            std::cout << "areStatesValid called " << call_count << " times" << std::endl;
+        }
+
+        // Check all parts of this robot against all parts of the other robot using FCL
         for (size_t part_i = 0; part_i < robot_->numParts(); ++part_i) {
             const auto& transform_i = robot_->getTransform(state1, part_i);
 
@@ -144,26 +165,22 @@ public:
             co_i.setRotation(transform_i.rotation());
             co_i.computeAABB();
 
-            // We need to get the other robot's geometry
-            // Since we can't easily get the Robot object from state2.first,
-            // we'll use a simple distance-based collision check as a fallback
-            // This assumes all robots are similar in size
+            for (size_t part_j = 0; part_j < other_robot->numParts(); ++part_j) {
+                const auto& transform_j = other_robot->getTransform(state2.second, part_j);
 
-            // Extract positions from both states (assuming SE2 state space)
-            const auto* se2_state1 = state1->as<ob::SE2StateSpace::StateType>();
-            const auto* se2_state2 = state2.second->as<ob::SE2StateSpace::StateType>();
+                fcl::CollisionObjectf co_j(other_robot->getCollisionGeometry(part_j));
+                co_j.setTranslation(transform_j.translation());
+                co_j.setRotation(transform_j.rotation());
+                co_j.computeAABB();
 
-            const double* pos1 = se2_state1->as<ob::RealVectorStateSpace::StateType>(0)->values;
-            const double* pos2 = se2_state2->as<ob::RealVectorStateSpace::StateType>(0)->values;
+                // Perform FCL collision check between the two collision objects
+                fcl::CollisionRequestf request;
+                fcl::CollisionResultf result;
+                fcl::collide(&co_i, &co_j, request, result);
 
-            double dist = sqrt(pow(pos1[0] - pos2[0], 2) + pow(pos1[1] - pos2[1], 2));
-
-            // Use a conservative collision radius (sum of robot radii)
-            // This is a simplification - ideally we'd get the actual geometry
-            double collision_threshold = 0.4; // Conservative estimate for robot radius sum
-
-            if (dist < collision_threshold) {
-                return false; // Collision detected
+                if (result.isCollision()) {
+                    return false; // Collision detected
+                }
             }
         }
 
@@ -391,6 +408,9 @@ int main(int argc, char** argv)
         // Setup the space information
         robot_si->setup();
 
+        // Register this robot in the global registry so areStatesValid() can look it up
+        g_robot_registry[robot_si.get()] = robot;
+
         // Parse start state
         const auto& start_vec = robot_node["start"];
         auto start_state = robot_state_space->allocState();
@@ -518,6 +538,86 @@ int main(int argc, char** argv)
         output["result"] = result;
 
         std::cout << "Solution extracted successfully" << std::endl;
+
+        // Validate no inter-robot collisions along the paths
+        std::cout << "Validating solution for inter-robot collisions..." << std::endl;
+        bool collision_free = true;
+        int collision_robot1 = -1, collision_robot2 = -1;
+        size_t collision_time = 0;
+
+        // Find maximum number of states across all paths
+        size_t max_states = 0;
+        std::vector<std::shared_ptr<oc::PathControl>> robot_paths;
+        for (int r = 0; r < num_robots; ++r) {
+            auto path = control_plan->getPath(r);
+            robot_paths.push_back(path);
+            if (path && path->getStateCount() > max_states) {
+                max_states = path->getStateCount();
+            }
+        }
+
+        // Check all robot pairs at each time step
+        for (size_t t = 0; t < max_states && collision_free; ++t) {
+            for (int r1 = 0; r1 < num_robots && collision_free; ++r1) {
+                if (!robot_paths[r1]) continue;
+
+                // Get state for robot r1 (clamp to last state if path ended)
+                size_t idx1 = std::min(t, robot_paths[r1]->getStateCount() - 1);
+                const ob::State* state1 = robot_paths[r1]->getState(idx1);
+
+                for (int r2 = r1 + 1; r2 < num_robots && collision_free; ++r2) {
+                    if (!robot_paths[r2]) continue;
+
+                    // Get state for robot r2 (clamp to last state if path ended)
+                    size_t idx2 = std::min(t, robot_paths[r2]->getStateCount() - 1);
+                    const ob::State* state2 = robot_paths[r2]->getState(idx2);
+
+                    // Check collision between all parts of robot r1 and r2
+                    for (size_t part_i = 0; part_i < robots[r1]->numParts() && collision_free; ++part_i) {
+                        const auto& transform_i = robots[r1]->getTransform(state1, part_i);
+
+                        fcl::CollisionObjectf co_i(robots[r1]->getCollisionGeometry(part_i));
+                        co_i.setTranslation(transform_i.translation());
+                        co_i.setRotation(transform_i.rotation());
+                        co_i.computeAABB();
+
+                        for (size_t part_j = 0; part_j < robots[r2]->numParts() && collision_free; ++part_j) {
+                            const auto& transform_j = robots[r2]->getTransform(state2, part_j);
+
+                            fcl::CollisionObjectf co_j(robots[r2]->getCollisionGeometry(part_j));
+                            co_j.setTranslation(transform_j.translation());
+                            co_j.setRotation(transform_j.rotation());
+                            co_j.computeAABB();
+
+                            fcl::CollisionRequestf request;
+                            fcl::CollisionResultf result;
+                            fcl::collide(&co_i, &co_j, request, result);
+
+                            if (result.isCollision()) {
+                                collision_free = false;
+                                collision_robot1 = r1;
+                                collision_robot2 = r2;
+                                collision_time = t;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!collision_free) {
+            std::cout << "COLLISION DETECTED: Robot " << collision_robot1
+                      << " and Robot " << collision_robot2
+                      << " at time step " << collision_time << std::endl;
+            solved = false;
+            output["solved"] = false;
+            output["collision_detected"] = true;
+            output["collision_robot1"] = collision_robot1;
+            output["collision_robot2"] = collision_robot2;
+            output["collision_time_step"] = static_cast<int>(collision_time);
+        } else {
+            std::cout << "Solution validated: no inter-robot collisions" << std::endl;
+        }
     } else {
         std::cout << "No solution found within time limit" << std::endl;
     }
@@ -534,6 +634,8 @@ int main(int argc, char** argv)
     }
 
     // Cleanup
+    g_robot_registry.clear();
+
     for (auto* co : obstacles) {
         delete co;
     }
