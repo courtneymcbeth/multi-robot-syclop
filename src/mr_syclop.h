@@ -12,6 +12,7 @@
 #include "robots.h"
 #include "coupled_rrt.h"
 #include "guided/guided_planner.h"  // Includes dynobench::Obstacle
+#include "composite_dbrrt.h"        // Composite DB-RRT planner
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
@@ -30,8 +31,8 @@ struct CollisionResolutionConfig {
     int max_decomposition_attempts = 3;           // How many decomposition refinement levels (0=skip)
     int max_subproblem_expansion_attempts = 1;    // How many subproblem expansions (0=skip)
     int max_composite_attempts = 1;               // How many composite planner attempts (0=skip)
-    int max_total_resolution_attempts = 10;       // Overall iteration limit
     double decomposition_subdivision_factor = 2.0; // How much to subdivide each time
+    bool recheck_from_prior_segment = false;      // If true, start collision re-checking from prior segment start instead of collision timestep
 };
 
 struct MRSyCLoPConfig {
@@ -49,7 +50,8 @@ struct MRSyCLoPConfig {
     // Guided planner configuration
     std::string guided_planner_method = "syclop_rrt";
     mr_syclop::GuidedPlannerConfig guided_planner_config;
-    mr_syclop::DBRRTConfig db_rrt_config;  // DB-RRT specific config
+    mr_syclop::DBRRTConfig db_rrt_config;  // DB-RRT specific config (for individual planning)
+    CompositeDBRRTConfig composite_dbrrt_config;  // Composite DB-RRT config (for joint planning)
 
     // Segmentation configuration
     int segment_timesteps = 30;  // Number of timesteps per segment
@@ -203,6 +205,12 @@ private:
     void setupDynobenchObstacles();  // Convert FCL obstacles to dynobench format
     void setupRobots();
     void cleanup();
+
+    // Composite DB-RRT planning (joint multi-robot planning)
+    void computeGuidedPathsWithCompositeDBRRT();
+    std::shared_ptr<oc::PathControl> convertDynobenchTrajectory(
+        const dynobench::Trajectory& traj,
+        const std::shared_ptr<Robot>& robot);
     std::vector<fcl::CollisionObjectf*> getObstaclesInRegion(
         const std::vector<double>& region_min,
         const std::vector<double>& region_max) const;
@@ -251,6 +259,7 @@ private:
         const PathUpdateInfo& update_info_1,
         const PathUpdateInfo& update_info_2);
     void recheckCollisionsFromTimestep(int start_timestep);
+    int getRecheckStartTimestep(const SegmentCollision& collision);
     void segmentSinglePath(
         size_t robot_idx,
         const std::shared_ptr<oc::PathControl>& path,
