@@ -112,6 +112,7 @@ target_link_libraries(mr_syclop
   coupled_rrt_lib
   mapf_solver_lib
   guided_planner
+  composite_dbrrt_lib
   ${Boost_LIBRARIES}
   ${YAML_LIBRARIES}
   ompl
@@ -231,5 +232,41 @@ target_link_libraries(arc
   ${YAML_LIBRARIES}
 )
 target_include_directories(arc PUBLIC
+  ${YAML_INCLUDE_DIRS}
+)
+
+## composite_dbrrt - Composite DB-RRT Multi-Robot Planner
+
+# Create library for composite_dbrrt implementation (can be used by other targets)
+add_library(composite_dbrrt_lib
+  src/composite_dbrrt.cpp
+)
+target_link_libraries(composite_dbrrt_lib
+  PUBLIC motion_planning_common
+  PUBLIC ompl
+  PUBLIC ${FCL_LIBRARIES}
+  PUBLIC idbastar::dbrrt
+  PUBLIC idbastar::optimization
+  PUBLIC dynobench::dynobench
+)
+target_include_directories(composite_dbrrt_lib PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/db-CBS/src
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/dynobench/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/deps/nigh/src
+  ${FCL_INCLUDE_DIRS}
+)
+
+# Executable that uses the library
+add_executable(composite_dbrrt
+  src/composite_dbrrt_main.cpp
+)
+target_link_libraries(composite_dbrrt
+  composite_dbrrt_lib
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+)
+target_include_directories(composite_dbrrt PUBLIC
   ${YAML_INCLUDE_DIRS}
 )
