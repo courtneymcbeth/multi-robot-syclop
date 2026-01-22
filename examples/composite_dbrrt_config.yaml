@@ -1,0 +1,29 @@
+# Configuration for composite_dbrrt planner
+
+time_limit: 60.0
+
+# Per-robot DB-RRT parameters
+delta: 0.3
+goal_region: 0.5
+max_motions: 1000
+
+# Composite search parameters
+expansions_per_iter: 5
+goal_threshold: 0.5
+goal_bias: 0.1
+require_all_move: false
+
+# Random seed (-1 for random)
+seed: 42
+
+# Debug output
+debug: true
+
+# Path to dynobench models directory
+models_base_path: "db-CBS/dynoplan/dynobench/models/"
+
+# Motion primitive files per robot type
+# Keys match the robot type from input file (unicycle_first_order_0)
+# The motion primitives file can be from the compatible dynobench type (unicycle1_v0)
+motion_files:
+  unicycle_first_order_0: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"

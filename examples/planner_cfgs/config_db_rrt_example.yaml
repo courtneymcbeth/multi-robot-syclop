@@ -38,6 +38,8 @@ guided_planner:
   use_regional_nn: true
 
   # DB-RRT specific parameters (only used if guided_planner_method: "db_rrt")
+  # Note: When guided_planner_method is "db_rrt", the planner uses CompositeDBRRT
+  # for joint multi-robot planning (configured in composite_dbrrt section below)
   db_rrt:
     # Path to motion primitives file
     motions_file: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
@@ -66,6 +68,36 @@ guided_planner:
     use_region_guidance: true # Use region path for guidance
     region_bias: 0.3          # Bias towards regions in path
 
+  # Composite DB-RRT configuration (used when guided_planner_method: "db_rrt")
+  # This enables joint multi-robot planning with tensor product coordination
+  composite_dbrrt:
+    # Time limit for planning (seconds)
+    time_limit: 120.0
+
+    # Per-robot DB-RRT parameters
+    delta: 0.3                # Motion primitive search radius
+    goal_region: 0.5          # Goal threshold for individual robots
+    max_motions: 1000         # Max primitives to load per robot
+
+    # Composite search parameters
+    expansions_per_iter: 5    # Expansions per iteration
+    goal_threshold: 0.5       # Per-robot goal check threshold
+    goal_bias: 0.1            # Goal bias for sampling
+    require_all_move: false   # If true, all robots must move in each expansion
+
+    # Path to dynobench models directory
+    models_base_path: "db-CBS/dynoplan/dynobench/models/"
+
+    # Random seed (-1 for random)
+    seed: 42
+
+    # Debug output
+    debug: true
+
+    # Motion primitive files per robot type
+    motion_files:
+      unicycle_first_order_0_sphere: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+
 # Collision resolution strategy
 collision_resolution_method: "coupled_rrt"  # Options: "coupled_rrt", "drrt", "srrt", "none"
 
@@ -74,6 +106,15 @@ coupled_rrt:
   time_per_group: 30.0
   max_planning_time: 120.0
   use_connect: true
+
+# Collision resolution configuration
+# Resolution continues until all collisions resolved or a collision exhausts all strategies
+collision_resolution:
+  max_decomposition_attempts: 3       # Decomposition refinement levels (0=skip)
+  max_subproblem_expansion_attempts: 3  # Subproblem expansion attempts (0=skip)
+  max_composite_attempts: 1           # Composite planner attempts (0=skip) - final fallback
+  decomposition_subdivision_factor: 2.0
+  recheck_from_prior_segment: true    # If true, start collision re-checking from prior segment start instead of collision timestep
 
 # Planning parameters
 max_iterations: 10            # Maximum collision resolution iterations
