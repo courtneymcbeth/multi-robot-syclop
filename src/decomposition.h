@@ -15,6 +15,9 @@ class GridDecompositionImpl : public ompl::control::GridDecomposition {
     const ompl::base::RealVectorBounds& getRegionBoundsPublic(int rid) const {
         return getRegionBounds(rid);
     }
+
+    // Override to only return cardinal neighbors (no diagonals)
+    void getNeighbors(int rid, std::vector<int>& neighbors) const override;
 };
 
 #endif // GRID_DECOMPOSITION_IMPL_H

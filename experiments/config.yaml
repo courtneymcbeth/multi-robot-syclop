@@ -1,0 +1,48 @@
+# Experiment Configuration
+# ========================
+
+# Experiment parameters
+num_seeds: 10           # Number of random seeds per configuration
+timeout: 300            # Time limit per run (seconds)
+start_robots: 2         # Starting number of robots
+robot_increment: 2      # Increase robots by this amount each iteration
+robot_type: unicycle_first_order_0_sphere  # Robot dynamics type
+
+# Base directory (relative to this config file)
+base_dir: .
+
+# Scenarios to run (in experiments/scenarios/)
+# These are base environment files without robots
+scenarios:
+  - open_20x20
+  - corridor_40x10
+  - random5_20x20
+  - random10_20x20
+
+
+# Planner configurations
+# Each planner needs an executable path and config file
+planners:
+  arc:
+    executable: ../build/arc
+    config: ../examples/planner_cfgs/arc_config.yaml
+
+  mr_syclop:
+    executable: ../build/mr_syclop
+    config: ../examples/planner_cfgs/mr_syclop_config.yaml
+
+  coupled_rrt:
+    executable: ../build/coupled_rrt
+    config: ../examples/planner_cfgs/coupled_rrt_config.yaml
+
+  decoupled_rrt:
+    executable: ../build/decoupled_rrt
+    config: ../examples/planner_cfgs/decoupled_rrt_config.yaml
+
+  srrt:
+    executable: ../build/srrt
+    config: ../examples/planner_cfgs/srrt_config.yaml
+
+  drrt:
+    executable: ../build/drrt
+    config: ../examples/planner_cfgs/drrt_config.yaml

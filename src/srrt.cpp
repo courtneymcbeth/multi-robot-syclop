@@ -954,7 +954,7 @@ int main(int argc, char* argv[]) {
         ("input,i", po::value<std::string>(&inputFile)->required(), "input file (yaml)")
         ("output,o", po::value<std::string>(&outputFile)->required(), "output file (yaml)")
         ("cfg,c", po::value<std::string>(&cfgFile)->required(), "configuration file (yaml)")
-        ("timelimit", po::value<int>(&timelimit)->default_value(60), "time limit for planner (seconds)");
+        ("timelimit,t", po::value<int>(&timelimit)->default_value(60), "time limit for planner (seconds)");
 
     try {
         po::variables_map vm;
