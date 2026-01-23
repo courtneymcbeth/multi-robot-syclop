@@ -2,6 +2,14 @@ build/
 install/
 examples/output/
 venv/
+experiments/results/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
 
 # Prerequisites
 *.d

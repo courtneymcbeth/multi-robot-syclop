@@ -1,0 +1,71 @@
+environment:
+  min: [0.0, 0.0]
+  max: [20.0, 20.0]
+  obstacles:
+  - type: box
+    center: [10.0, 2.0]
+    size: [0.5, 4.0]
+  - type: box
+    center: [10.0, 8.0]
+    size: [0.5, 4.0]
+  - type: box
+    center: [10.0, 12.0]
+    size: [0.5, 4.0]
+  - type: box
+    center: [10.0, 18.0]
+    size: [0.5, 4.0]
+  - type: box
+    center: [2.0, 10.0]
+    size: [4.0, 0.5]
+  - type: box
+    center: [8.0, 10.0]
+    size: [4.0, 0.5]
+  - type: box
+    center: [12.0, 10.0]
+    size: [4.0, 0.5]
+  - type: box
+    center: [18.0, 10.0]
+    size: [4.0, 0.5]
+robots:
+- type: unicycle_first_order_0_sphere
+  start: [15.3388, 15.8596, -0.094]
+  goal: [5.6615, 0.9082, 1.023]
+- type: unicycle_first_order_0_sphere
+  start: [9.4586, 14.7271, -0.797]
+  goal: [14.9165, 5.8631, 1.897]
+- type: unicycle_first_order_0_sphere
+  start: [14.1828, 8.4349, 0.2407]
+  goal: [13.3133, 4.4123, 0.3369]
+- type: unicycle_first_order_0_sphere
+  start: [15.5533, 5.7325, 1.9061]
+  goal: [13.3796, 16.2659, -1.0331]
+- type: unicycle_first_order_0_sphere
+  start: [2.595, 15.4651, 1.915]
+  goal: [9.0029, 2.6068, -1.9028]
+- type: unicycle_first_order_0_sphere
+  start: [12.4555, 6.1995, 2.8361]
+  goal: [11.612, 4.5559, 0.9764]
+- type: unicycle_first_order_0_sphere
+  start: [7.4589, 17.8758, 2.573]
+  goal: [15.5602, 18.67, -2.963]
+- type: unicycle_first_order_0_sphere
+  start: [7.4771, 11.8518, -1.2295]
+  goal: [11.6227, 2.5323, 2.3881]
+- type: unicycle_first_order_0_sphere
+  start: [6.5835, 4.4713, -0.1021]
+  goal: [3.4135, 4.7199, 2.2967]
+- type: unicycle_first_order_0_sphere
+  start: [13.6077, 1.1279, 1.7471]
+  goal: [1.2105, 6.959, 2.5412]
+- type: unicycle_first_order_0_sphere
+  start: [7.9828, 3.2084, 3.1408]
+  goal: [1.8796, 8.5966, 1.5476]
+- type: unicycle_first_order_0_sphere
+  start: [8.1393, 18.7537, -1.6003]
+  goal: [18.7225, 17.1391, 1.0695]
+- type: unicycle_first_order_0_sphere
+  start: [17.0891, 9.0389, 2.0814]
+  goal: [15.389, 10.3037, -0.1827]
+- type: unicycle_first_order_0_sphere
+  start: [14.4866, 5.7379, -0.0775]
+  goal: [15.1693, 4.0327, -3.0042]

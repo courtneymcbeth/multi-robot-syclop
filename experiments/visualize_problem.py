@@ -214,12 +214,6 @@ def visualize_environment(env_file, solution_file=None, output_file=None,
     # Set title
     if title:
         ax.set_title(title)
-    else:
-        robots = env.get('robots', [])
-        if robots:
-            ax.set_title(f'Problem: {len(robots)} robots')
-        else:
-            ax.set_title('Environment')
 
     # Draw components
     draw_obstacles(ax, env)

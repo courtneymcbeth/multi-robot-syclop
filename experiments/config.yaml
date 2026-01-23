@@ -3,7 +3,7 @@
 
 # Experiment parameters
 num_seeds: 10           # Number of random seeds per configuration
-timeout: 300            # Time limit per run (seconds)
+timeout: 600            # Time limit per run (seconds)
 start_robots: 2         # Starting number of robots
 robot_increment: 2      # Increase robots by this amount each iteration
 robot_type: unicycle_first_order_0_sphere  # Robot dynamics type
@@ -18,6 +18,8 @@ scenarios:
   - corridor_40x10
   - random5_20x20
   - random10_20x20
+  - rooms4_20x20
+  - grid5_20x20
 
 
 # Planner configurations

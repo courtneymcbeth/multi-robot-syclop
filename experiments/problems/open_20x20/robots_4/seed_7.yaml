@@ -1,0 +1,17 @@
+environment:
+  min: [0.0, 0.0]
+  max: [20.0, 20.0]
+  obstacles: []
+robots:
+- type: unicycle_first_order_0_sphere
+  start: [6.7938, 3.6455, 0.9483]
+  goal: [2.2183, 10.6531, -0.8439]
+- type: unicycle_first_order_0_sphere
+  start: [1.9556, 10.1353, -2.906]
+  goal: [8.7924, 2.1714, -2.5716]
+- type: unicycle_first_order_0_sphere
+  start: [8.6262, 15.9487, -2.3637]
+  goal: [4.9629, 12.3193, 2.813]
+- type: unicycle_first_order_0_sphere
+  start: [11.4033, 8.1196, 2.9924]
+  goal: [1.7478, 16.5241, -1.3219]

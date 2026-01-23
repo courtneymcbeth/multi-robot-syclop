@@ -1,0 +1,2 @@
+{roadmap_time: 0.5, expansions_per_iter: 5, spars_max_failures: 5000, spars_sparse_delta_fraction: 0.25,
+  spars_dense_delta_fraction: 0.001, spars_stretch_factor: 3.0, seed: 3}

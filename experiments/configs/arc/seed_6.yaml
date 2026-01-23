@@ -1,0 +1,4 @@
+{goal_threshold: 0.5, initial_time_window: 10, time_window_expansion_step: 5, max_subproblem_expansions: 5,
+  spatial_expansion_factor: 1.5, prioritized_query_timeout: 1.0, decoupled_prm_timeout: 5.0,
+  composite_prm_timeout: 10.0, states_per_check: 10, max_conflicts_resolved: 100,
+  seed: 6}

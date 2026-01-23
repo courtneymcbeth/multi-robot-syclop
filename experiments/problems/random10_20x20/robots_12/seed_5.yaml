@@ -1,0 +1,74 @@
+environment:
+  min: [0.0, 0.0]
+  max: [20.0, 20.0]
+  obstacles:
+  - type: box
+    center: [7.45, 11.26]
+    size: [1.29, 2.59]
+  - type: box
+    center: [15.48, 16.03]
+    size: [1.06, 2.67]
+  - type: box
+    center: [10.04, 6.99]
+    size: [2.49, 1.3]
+  - type: box
+    center: [5.32, 6.38]
+    size: [2.34, 2.41]
+  - type: box
+    center: [12.44, 17.99]
+    size: [1.17, 1.56]
+  - type: box
+    center: [2.25, 14.6]
+    size: [1.37, 2.06]
+  - type: box
+    center: [8.96, 16.15]
+    size: [2.13, 2.8]
+  - type: box
+    center: [10.09, 9.41]
+    size: [1.78, 1.69]
+  - type: box
+    center: [8.17, 3.48]
+    size: [1.62, 2.5]
+  - type: box
+    center: [14.54, 5.95]
+    size: [1.77, 2.98]
+  - type: box
+    center: [15.2, 9.68]
+    size: [2.22, 1.81]
+robots:
+- type: unicycle_first_order_0_sphere
+  start: [12.2368, 14.4005, 1.8548]
+  goal: [18.0526, 14.3662, 2.6535]
+- type: unicycle_first_order_0_sphere
+  start: [1.4279, 9.3743, 2.7857]
+  goal: [9.4371, 5.3876, 0.275]
+- type: unicycle_first_order_0_sphere
+  start: [11.3457, 1.1387, -1.7798]
+  goal: [5.9866, 17.5775, 1.6696]
+- type: unicycle_first_order_0_sphere
+  start: [3.8048, 15.4081, -2.2697]
+  goal: [12.1376, 3.2059, -3.1304]
+- type: unicycle_first_order_0_sphere
+  start: [16.7596, 4.7121, -1.7877]
+  goal: [18.7801, 16.7778, -1.3238]
+- type: unicycle_first_order_0_sphere
+  start: [18.3989, 10.7139, 1.1173]
+  goal: [4.627, 18.0258, 1.1978]
+- type: unicycle_first_order_0_sphere
+  start: [18.4915, 17.1661, -1.2642]
+  goal: [2.0855, 6.3847, 0.6479]
+- type: unicycle_first_order_0_sphere
+  start: [0.9616, 13.2384, -1.0185]
+  goal: [6.5412, 15.797, -0.121]
+- type: unicycle_first_order_0_sphere
+  start: [1.9374, 18.6468, -2.9979]
+  goal: [14.5463, 16.2768, -3.0281]
+- type: unicycle_first_order_0_sphere
+  start: [1.0652, 1.7504, -2.0048]
+  goal: [18.2843, 4.4767, 1.6068]
+- type: unicycle_first_order_0_sphere
+  start: [17.8197, 18.0452, -0.9778]
+  goal: [16.5464, 1.5667, 2.801]
+- type: unicycle_first_order_0_sphere
+  start: [2.5595, 7.1015, 0.6963]
+  goal: [17.6092, 7.0873, 2.6653]

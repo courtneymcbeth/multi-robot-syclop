@@ -1,0 +1,59 @@
+environment:
+  min: [0.0, 0.0]
+  max: [20.0, 20.0]
+  obstacles: []
+robots:
+- type: unicycle_first_order_0_sphere
+  start: [5.231, 10.805, -0.8171]
+  goal: [11.8913, 12.2881, -2.7299]
+- type: unicycle_first_order_0_sphere
+  start: [1.1397, 16.1419, -1.512]
+  goal: [5.1648, 19.0207, -0.1868]
+- type: unicycle_first_order_0_sphere
+  start: [16.1236, 9.5696, 0.8738]
+  goal: [3.6412, 12.4545, 2.3125]
+- type: unicycle_first_order_0_sphere
+  start: [10.4219, 14.3908, 1.077]
+  goal: [2.0654, 14.6998, 0.5724]
+- type: unicycle_first_order_0_sphere
+  start: [6.3831, 1.4644, 2.2967]
+  goal: [9.504, 13.9826, 2.3801]
+- type: unicycle_first_order_0_sphere
+  start: [13.8972, 17.664, -0.66]
+  goal: [15.4765, 8.9921, 2.7369]
+- type: unicycle_first_order_0_sphere
+  start: [16.8954, 2.6737, -2.2873]
+  goal: [12.305, 6.3787, 0.0455]
+- type: unicycle_first_order_0_sphere
+  start: [7.9228, 7.2866, 0.5345]
+  goal: [11.5334, 17.3565, 1.1434]
+- type: unicycle_first_order_0_sphere
+  start: [17.8068, 16.4865, 3.085]
+  goal: [13.1172, 3.8684, 2.266]
+- type: unicycle_first_order_0_sphere
+  start: [18.4563, 17.3655, 0.4342]
+  goal: [13.8915, 4.7425, 2.0836]
+- type: unicycle_first_order_0_sphere
+  start: [11.3383, 6.0862, -2.7429]
+  goal: [16.4418, 18.9145, -2.5854]
+- type: unicycle_first_order_0_sphere
+  start: [15.4708, 8.3704, -2.1943]
+  goal: [6.2488, 14.892, 2.3422]
+- type: unicycle_first_order_0_sphere
+  start: [1.7043, 12.0845, -2.8592]
+  goal: [13.9756, 6.9234, 2.3933]
+- type: unicycle_first_order_0_sphere
+  start: [18.7476, 10.0987, 3.1322]
+  goal: [6.536, 2.3009, 0.6268]
+- type: unicycle_first_order_0_sphere
+  start: [1.4711, 4.4924, -0.5785]
+  goal: [12.0105, 3.7428, -2.875]
+- type: unicycle_first_order_0_sphere
+  start: [16.6936, 6.6117, 2.8818]
+  goal: [10.3653, 12.6188, 0.601]
+- type: unicycle_first_order_0_sphere
+  start: [11.0786, 12.1863, 2.7685]
+  goal: [10.1279, 8.7477, 1.3843]
+- type: unicycle_first_order_0_sphere
+  start: [5.225, 6.3798, 3.0021]
+  goal: [10.3845, 10.8814, -3.0696]

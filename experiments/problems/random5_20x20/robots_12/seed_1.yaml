@@ -1,0 +1,59 @@
+environment:
+  min: [0.0, 0.0]
+  max: [20.0, 20.0]
+  obstacles:
+  - type: box
+    center: [2.24, 6.97]
+    size: [1.83, 1.77]
+  - type: box
+    center: [13.87, 9.15]
+    size: [1.72, 2.13]
+  - type: box
+    center: [16.04, 1.94]
+    size: [1.83, 1.14]
+  - type: box
+    center: [9.04, 8.72]
+    size: [2.17, 1.72]
+  - type: box
+    center: [13.39, 2.86]
+    size: [2.38, 1.05]
+  - type: box
+    center: [7.44, 13.29]
+    size: [2.52, 2.91]
+robots:
+- type: unicycle_first_order_0_sphere
+  start: [3.3454, 16.3233, 1.6573]
+  goal: [5.5423, 9.9169, -0.3174]
+- type: unicycle_first_order_0_sphere
+  start: [12.759, 15.2548, -2.5519]
+  goal: [1.4159, 16.1109, -0.4224]
+- type: unicycle_first_order_0_sphere
+  start: [14.7735, 0.9383, -0.3431]
+  goal: [14.032, 5.0635, 2.7977]
+- type: unicycle_first_order_0_sphere
+  start: [10.7537, 17.9925, -0.7464]
+  goal: [4.8421, 8.5825, -2.9591]
+- type: unicycle_first_order_0_sphere
+  start: [4.9348, 8.8696, -0.0263]
+  goal: [5.1421, 5.1018, -1.7669]
+- type: unicycle_first_order_0_sphere
+  start: [9.2648, 6.174, -3.0066]
+  goal: [16.1439, 11.0275, 0.8941]
+- type: unicycle_first_order_0_sphere
+  start: [4.2835, 18.9643, 2.2616]
+  goal: [13.8437, 17.9432, -0.4894]
+- type: unicycle_first_order_0_sphere
+  start: [16.0066, 13.0996, -1.2355]
+  goal: [11.594, 16.9611, 2.1752]
+- type: unicycle_first_order_0_sphere
+  start: [10.0962, 11.6198, -2.9247]
+  goal: [5.3179, 15.4128, -0.5384]
+- type: unicycle_first_order_0_sphere
+  start: [4.0487, 10.8881, 1.2757]
+  goal: [10.1534, 15.0677, 0.1316]
+- type: unicycle_first_order_0_sphere
+  start: [1.6915, 13.7016, 3.036]
+  goal: [11.6959, 8.0635, -2.0713]
+- type: unicycle_first_order_0_sphere
+  start: [10.0407, 18.7738, 1.6997]
+  goal: [10.721, 16.5573, -1.6828]
