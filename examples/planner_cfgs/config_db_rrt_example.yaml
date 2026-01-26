@@ -3,10 +3,18 @@
 # This configuration demonstrates how to use DB-RRT as the guided planner
 # for low-level path planning in the MR-SyCLoP framework.
 
+# Maximum total planning time in seconds (0 = no limit)
+# The planner will terminate and return failure if this time is exceeded
+max_total_time: 300.0
+
 # Decomposition configuration (required)
 # decomposition_region_length: 1  # Grid cell size for region decomposition
 # Decomposition region length
 decomposition_region_length: 5
+
+# Decomposition output directory (for visualization/debugging)
+# Set to empty string or omit to disable decomposition saving
+decomposition_output_dir: "examples/output/decompositions"
 
 # Path segmentation configuration
 segment_timesteps: 30      # Number of timesteps per segment
@@ -54,10 +62,10 @@ guided_planner:
     delta: 0.3                # Step size for extension
     goal_bias: 0.1            # Probability of sampling goal
     max_motions: 1000         # Maximum motion primitives to load
-    seed: 100
+    seed: 15
 
     # Optimization
-    do_optimization: false    # Enable trajectory optimization
+    do_optimization: true    # Enable trajectory optimization
     solver_id: 0              # Trajectory optimizer solver ID
 
     # Advanced parameters
@@ -89,7 +97,7 @@ guided_planner:
     models_base_path: "db-CBS/dynoplan/dynobench/models/"
 
     # Random seed (-1 for random)
-    seed: 42
+    seed: 15
 
     # Debug output
     debug: true
@@ -115,6 +123,7 @@ collision_resolution:
   max_composite_attempts: 1           # Composite planner attempts (0=skip) - final fallback
   decomposition_subdivision_factor: 2.0
   recheck_from_prior_segment: true    # If true, start collision re-checking from prior segment start instead of collision timestep
+  escalation_frequency: 3             # After N collisions for same robot pair, increase min expansion layer (0=disable)
 
 # Planning parameters
 max_iterations: 10            # Maximum collision resolution iterations

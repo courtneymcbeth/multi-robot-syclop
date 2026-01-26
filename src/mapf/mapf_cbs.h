@@ -140,6 +140,13 @@ private:
 
     // Path extraction
     std::vector<std::vector<int>> extractRegionSequences(const std::vector<TimedPath>& paths);
+
+    // Helper function to find nearest valid neighbor region
+    int findNearestValidNeighbor(
+        oc::DecompositionPtr decomp,
+        int region,
+        const std::vector<fcl::CollisionObjectf*>& obstacles,
+        double max_obstacle_volume_percent);
 };
 
 #endif // MAPF_CBS_H
