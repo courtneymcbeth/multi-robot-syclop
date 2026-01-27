@@ -4,6 +4,7 @@
 #include "mr_syclop.h"
 
 #include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -16,6 +17,11 @@
 #include "robotStatePropagator.hpp"
 #include "fclStateValidityChecker.hpp"
 #include "mapf/mapf_solver.h"
+
+#include <yaml-cpp/yaml.h>
+#include <boost/program_options.hpp>
+
+namespace po = boost::program_options;
 
 #define DBG_PRINTS
 #include "db_astar.hpp"
@@ -64,6 +70,9 @@ void MRSyCLoPPlanner::cleanup()
     path_segments_.clear();
     collision_manager_.reset();
     problem_loaded_ = false;
+    resolution_stats_ = ResolutionStats();  // Reset resolution statistics
+    robot_pair_collision_counts_.clear();   // Reset cycle detection counters
+    decomposition_hierarchy_.clear();       // Clear decomposition hierarchy
 }
 
 void MRSyCLoPPlanner::loadProblem(
@@ -94,6 +103,10 @@ void MRSyCLoPPlanner::loadProblem(
     // Setup decomposition, collision manager, and robots
     setupDecomposition();
     setupCollisionManager();
+    // Convert FCL obstacles to dynobench format if using DB-RRT
+    if (config_.guided_planner_method == "db_rrt") {
+        setupDynobenchObstacles();
+    }
     setupRobots();
 
     problem_loaded_ = true;
@@ -116,6 +129,12 @@ void MRSyCLoPPlanner::setupDecomposition()
 #ifdef DBG_PRINTS
     std::cout << "  Decomposition created with " << decomp_->getNumRegions() << " regions" << std::endl;
 #endif
+
+    // Initialize decomposition hierarchy tracking
+    initializeDecompositionHierarchy();
+
+    // Save decomposition to file for visualization
+    saveDecompositionToFile(decomp_, "initial");
 }
 
 void MRSyCLoPPlanner::setupCollisionManager()
@@ -128,6 +147,43 @@ void MRSyCLoPPlanner::setupCollisionManager()
     collision_manager_->setup();
 #ifdef DBG_PRINTS
     std::cout << "  Collision manager setup with " << obstacles_.size() << " obstacles" << std::endl;
+#endif
+}
+
+void MRSyCLoPPlanner::setupDynobenchObstacles()
+{
+#ifdef DBG_PRINTS
+    std::cout << "Converting obstacles to dynobench format..." << std::endl;
+#endif
+    dynobench_obstacles_.clear();
+    dynobench_obstacles_.reserve(obstacles_.size());
+
+    for (const auto* obs : obstacles_) {
+        const auto* geom = obs->collisionGeometry().get();
+        const auto& translation = obs->getTranslation();
+
+        // Check if it's a box (currently the only supported type)
+        if (const auto* box = dynamic_cast<const fcl::Boxf*>(geom)) {
+            dynobench::Obstacle dyno_obs;
+            dyno_obs.type = "box";
+
+            // FCL Boxf stores half-extents as side[i], full size = 2 * side[i]
+            // But we created it with full size, so box->side is actually half the size
+            // Actually, FCL Boxf constructor takes full width/height/depth
+            dyno_obs.size.resize(2);
+            dyno_obs.size(0) = box->side[0];  // width
+            dyno_obs.size(1) = box->side[1];  // height
+
+            dyno_obs.center.resize(2);
+            dyno_obs.center(0) = static_cast<double>(translation[0]);
+            dyno_obs.center(1) = static_cast<double>(translation[1]);
+
+            dynobench_obstacles_.push_back(dyno_obs);
+        }
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "  Converted " << dynobench_obstacles_.size() << " obstacles to dynobench format" << std::endl;
 #endif
 }
 
@@ -217,14 +273,16 @@ void MRSyCLoPPlanner::computeGuidedPaths()
               << config_.guided_planner_method << "..." << std::endl;
 #endif
 
-    // Create guided planner
-    auto guided_planner = createGuidedPlanner(
-        config_.guided_planner_method,
-        config_.guided_planner_config,
-        collision_manager_);
-
     // Clear previous results
     guided_planning_results_.clear();
+
+    // Create guided planner for individual robot planning
+    auto guided_planner = createGuidedPlannerWithDBRRT(
+        config_.guided_planner_method,
+        config_.guided_planner_config,
+        config_.db_rrt_config,
+        collision_manager_,
+        dynobench_obstacles_);
 
     // Plan for each robot independently
     for (size_t i = 0; i < robots_.size(); ++i) {
@@ -232,7 +290,7 @@ void MRSyCLoPPlanner::computeGuidedPaths()
         std::cout << "Planning for robot " << i << "..." << std::endl;
 #endif
 
-        GuidedPlanningResult result = guided_planner->solve(
+        mr_syclop::GuidedPlanningResult result = guided_planner->solve(
             robots_[i],
             decomp_,
             start_states_[i],
@@ -262,6 +320,136 @@ void MRSyCLoPPlanner::computeGuidedPaths()
               << num_successful << "/" << robots_.size()
               << " robots found paths" << std::endl;
 #endif
+}
+
+void MRSyCLoPPlanner::computeGuidedPathsWithCompositeDBRRT()
+{
+#ifdef DBG_PRINTS
+    std::cout << "Using CompositeDBRRT for joint multi-robot planning..." << std::endl;
+#endif
+
+    // Build the CompositeDBRRT problem
+    CompositeDBRRTProblem problem;
+    problem.env_min = env_min_;
+    problem.env_max = env_max_;
+    problem.obstacles = obstacles_;
+    problem.dynobench_obstacles = dynobench_obstacles_;
+
+    // Add robot specifications
+    for (size_t i = 0; i < robots_.size(); ++i) {
+        CompositeRobotSpec spec;
+        spec.type = robot_types_[i];
+        spec.start = starts_[i];
+        spec.goal = goals_[i];
+        problem.robots.push_back(spec);
+    }
+
+    // Create and run the CompositeDBRRT planner
+    CompositeDBRRTPlanner composite_planner(config_.composite_dbrrt_config);
+    CompositeDBRRTResult result = composite_planner.plan(problem);
+
+#ifdef DBG_PRINTS
+    std::cout << "CompositeDBRRT planning " << (result.solved ? "succeeded" : "failed")
+              << " in " << result.planning_time << " seconds" << std::endl;
+#endif
+
+    // Convert results to GuidedPlanningResult format
+    if (result.solved && result.trajectories.size() == robots_.size()) {
+        for (size_t i = 0; i < robots_.size(); ++i) {
+            mr_syclop::GuidedPlanningResult guided_result;
+            guided_result.success = true;
+            guided_result.planning_time = result.planning_time;
+            guided_result.robot_index = i;
+            guided_result.path = convertDynobenchTrajectory(result.trajectories[i], robots_[i]);
+            guided_planning_results_.push_back(guided_result);
+
+#ifdef DBG_PRINTS
+            std::cout << "  Robot " << i << ": trajectory with "
+                      << result.trajectories[i].states.size() << " states" << std::endl;
+#endif
+        }
+    } else {
+        // Planning failed - create empty results for each robot
+        for (size_t i = 0; i < robots_.size(); ++i) {
+            mr_syclop::GuidedPlanningResult guided_result;
+            guided_result.success = false;
+            guided_result.planning_time = result.planning_time;
+            guided_result.robot_index = i;
+            guided_result.path = nullptr;
+            guided_planning_results_.push_back(guided_result);
+        }
+    }
+
+#ifdef DBG_PRINTS
+    size_t num_successful = 0;
+    for (const auto& res : guided_planning_results_) {
+        if (res.success) num_successful++;
+    }
+    std::cout << "CompositeDBRRT path computation completed: "
+              << num_successful << "/" << robots_.size()
+              << " robots found paths" << std::endl;
+#endif
+}
+
+std::shared_ptr<oc::PathControl> MRSyCLoPPlanner::convertDynobenchTrajectory(
+    const dynobench::Trajectory& traj,
+    const std::shared_ptr<Robot>& robot)
+{
+    auto si = robot->getSpaceInformation();
+    auto path = std::make_shared<oc::PathControl>(si);
+    auto state_space = si->getStateSpace();
+
+    // Convert states and controls
+    for (size_t i = 0; i < traj.states.size(); ++i) {
+        // Allocate and convert state
+        ob::State* state = si->allocState();
+
+        // Convert Eigen vector to OMPL state
+        size_t idx = 0;
+        if (auto compound = state_space->as<ob::CompoundStateSpace>()) {
+            auto* compound_state = state->as<ob::CompoundState>();
+            for (size_t s = 0; s < compound->getSubspaceCount(); ++s) {
+                auto subspace = compound->getSubspace(s);
+                auto* substate = compound_state->as<ob::State>(s);
+
+                if (subspace->getType() == ob::STATE_SPACE_SO2) {
+                    auto* so2_state = substate->as<ob::SO2StateSpace::StateType>();
+                    so2_state->value = traj.states[i](idx++);
+                } else if (subspace->getType() == ob::STATE_SPACE_REAL_VECTOR) {
+                    auto rv_space = subspace->as<ob::RealVectorStateSpace>();
+                    auto* rv_state = substate->as<ob::RealVectorStateSpace::StateType>();
+                    for (size_t j = 0; j < rv_space->getDimension(); ++j) {
+                        rv_state->values[j] = traj.states[i](idx++);
+                    }
+                }
+            }
+        } else if (auto rv_space = state_space->as<ob::RealVectorStateSpace>()) {
+            auto* rv_state = state->as<ob::RealVectorStateSpace::StateType>();
+            for (size_t j = 0; j < rv_space->getDimension(); ++j) {
+                rv_state->values[j] = traj.states[i](j);
+            }
+        }
+
+        if (i < traj.actions.size()) {
+            // Allocate and convert control
+            oc::Control* control = si->allocControl();
+            auto* rv_control = control->as<oc::RealVectorControlSpace::ControlType>();
+
+            for (size_t j = 0; j < traj.actions[i].size() &&
+                              j < si->getControlSpace()->getDimension(); ++j) {
+                rv_control->values[j] = traj.actions[i](j);
+            }
+
+            // Default timestep duration (should match dynobench model dt)
+            double duration = 0.1;
+            path->append(state, control, duration);
+        } else {
+            // Last state, no control
+            path->append(state);
+        }
+    }
+
+    return path;
 }
 
 void MRSyCLoPPlanner::segmentGuidedPaths()
@@ -560,15 +748,35 @@ bool MRSyCLoPPlanner::checkSegmentsForCollisions()
         return false;  // No segments to check
     }
 
-    // Find maximum segment count across all robots
-    size_t max_segment_count = 0;
+    // Check if any robot has segments
+    bool any_robot_has_segments = false;
     for (const auto& robot_segments : path_segments_) {
-        max_segment_count = std::max(max_segment_count, robot_segments.size());
+        if (!robot_segments.empty()) {
+            any_robot_has_segments = true;
+            break;
+        }
     }
-
-    if (max_segment_count == 0) {
+    if (!any_robot_has_segments) {
         return false;  // No segments to check
     }
+
+    // Find the global maximum timestep across ALL robots and ALL segments
+    // This ensures we check every timestep where any robot is still moving
+    int max_timestep = 0;
+    for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
+        if (!path_segments_[robot_idx].empty()) {
+            const auto& last_segment = path_segments_[robot_idx].back();
+            max_timestep = std::max(max_timestep, last_segment.end_timestep);
+        }
+    }
+
+    if (max_timestep == 0) {
+        return false;  // No timesteps to check
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "  Checking timesteps 0 to " << max_timestep - 1 << std::endl;
+#endif
 
     // Allocate states for each robot (one per robot for current timestep)
     std::vector<ob::State*> current_states(robots_.size(), nullptr);
@@ -576,98 +784,103 @@ bool MRSyCLoPPlanner::checkSegmentsForCollisions()
         current_states[i] = robots_[i]->getSpaceInformation()->getStateSpace()->allocState();
     }
 
-    // Iterate over segment indices (NEW: segment-based approach)
-    for (size_t seg_idx = 0; seg_idx < max_segment_count; ++seg_idx) {
+    // Iterate over ALL absolute timesteps to ensure complete coverage
+    for (int timestep = 0; timestep < max_timestep; ++timestep) {
 
-        // Find the minimum duration among robots that have this segment
-        int min_duration = INT_MAX;
-        bool any_robot_has_segment = false;
-
+        // Propagate each robot to this absolute timestep
         for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
-            if (seg_idx < path_segments_[robot_idx].size()) {
-                any_robot_has_segment = true;
-                const auto& segment = path_segments_[robot_idx][seg_idx];
-                int duration = segment.end_timestep - segment.start_timestep;
-                min_duration = std::min(min_duration, duration);
+            if (path_segments_[robot_idx].empty()) continue;
+
+            // Find the segment that contains this timestep
+            const PathSegment* seg = findSegmentAtTimestep(robot_idx, timestep);
+
+            if (seg != nullptr) {
+                // Robot has a segment at this timestep - propagate to it
+                propagateToTimestep(robot_idx, seg->segment_index, timestep, current_states[robot_idx]);
+            } else {
+                // Robot's path has ended - use final state (goal)
+                const auto& last_segment = path_segments_[robot_idx].back();
+                robots_[robot_idx]->getSpaceInformation()->copyState(
+                    current_states[robot_idx], last_segment.end_state);
             }
         }
 
-        if (!any_robot_has_segment) continue;
+        // Check robot-robot collisions (only if 2+ robots)
+        if (robots_.size() >= 2) {
+            for (size_t i = 0; i < robots_.size(); ++i) {
+                if (path_segments_[i].empty()) continue;
 
-        // Check each relative timestep within this segment index
-        for (int rel_t = 0; rel_t < min_duration; ++rel_t) {
+                for (size_t j = i + 1; j < robots_.size(); ++j) {
+                    if (path_segments_[j].empty()) continue;
 
-            // Propagate each robot to relative timestep rel_t within segment seg_idx
-            for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
-                if (seg_idx < path_segments_[robot_idx].size()) {
-                    // Robot has this segment - propagate to timestep within this segment
-                    const auto& segment = path_segments_[robot_idx][seg_idx];
-                    int absolute_timestep = segment.start_timestep + rel_t;
-                    propagateToTimestep(robot_idx, seg_idx, absolute_timestep, current_states[robot_idx]);
-                } else if (!path_segments_[robot_idx].empty()) {
-                    // Robot finished - use goal state (end of last segment)
-                    const auto& last_segment = path_segments_[robot_idx].back();
-                    robots_[robot_idx]->getSpaceInformation()->copyState(
-                        current_states[robot_idx], last_segment.end_state);
-                }
-                // else: robot has no segments, skip
-            }
+                    size_t part_i, part_j;
+                    if (checkTwoRobotCollision(i, current_states[i], j, current_states[j], part_i, part_j)) {
+                        // Record collision
+                        SegmentCollision collision;
+                        collision.type = SegmentCollision::ROBOT_ROBOT;
+                        collision.robot_index_1 = i;
+                        collision.robot_index_2 = j;
+                        collision.timestep = timestep;
+                        collision.part_index_1 = part_i;
+                        collision.part_index_2 = part_j;
 
-            // Calculate absolute timestep for collision reporting
-            // (use first robot that has this segment as reference)
-            int absolute_timestep = rel_t;
-            for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
-                if (seg_idx < path_segments_[robot_idx].size()) {
-                    absolute_timestep = path_segments_[robot_idx][seg_idx].start_timestep + rel_t;
-                    break;
-                }
-            }
+                        // Find which segment each robot is in at this timestep
+                        const PathSegment* seg_i = findSegmentAtTimestep(i, timestep);
+                        const PathSegment* seg_j = findSegmentAtTimestep(j, timestep);
 
-            // Note: Robot-environment collisions are guaranteed to be avoided by the
-            // guided planner's state validity checker. We only check robot-robot
-            // collisions here since individual planners don't coordinate with each other.
+                        collision.segment_index_1 = seg_i ? seg_i->segment_index : path_segments_[i].size() - 1;
+                        collision.segment_index_2 = seg_j ? seg_j->segment_index : path_segments_[j].size() - 1;
 
-            // Check robot-robot collisions (only if 2+ robots)
-            if (robots_.size() >= 2) {
-                for (size_t i = 0; i < robots_.size(); ++i) {
-                    if (path_segments_[i].empty()) continue;
-
-                    for (size_t j = i + 1; j < robots_.size(); ++j) {
-                        if (path_segments_[j].empty()) continue;
-
-                        size_t part_i, part_j;
-                        if (checkTwoRobotCollision(i, current_states[i], j, current_states[j], part_i, part_j)) {
-                            // Record collision
-                            SegmentCollision collision;
-                            collision.type = SegmentCollision::ROBOT_ROBOT;
-                            collision.robot_index_1 = i;
-                            collision.robot_index_2 = j;
-                            collision.timestep = absolute_timestep;
-                            collision.part_index_1 = part_i;
-                            collision.part_index_2 = part_j;
-
-                            // Both robots are now at the same segment index
-                            if (seg_idx < path_segments_[i].size()) {
-                                collision.segment_index_1 = seg_idx;
-                            } else if (!path_segments_[i].empty()) {
-                                collision.segment_index_1 = path_segments_[i].size() - 1;
-                            }
-
-                            if (seg_idx < path_segments_[j].size()) {
-                                collision.segment_index_2 = seg_idx;
-                            } else if (!path_segments_[j].empty()) {
-                                collision.segment_index_2 = path_segments_[j].size() - 1;
-                            }
-
-                            segment_collisions_.push_back(collision);
+                        segment_collisions_.push_back(collision);
 
 #ifdef DBG_PRINTS
-                            std::cout << "  Robot-robot collision: Robots " << i << " and " << j
-                                      << " at segment " << seg_idx
-                                      << " (timestep " << absolute_timestep << ")" << std::endl;
+                        std::cout << "  Robot-robot collision: Robots " << i << " and " << j
+                                  << " at timestep " << timestep
+                                  << " (segments " << collision.segment_index_1 << ", " << collision.segment_index_2 << ")" << std::endl;
 #endif
-                        }
                     }
+                }
+            }
+        }
+
+        // Also check robot-environment collisions at this timestep
+        // (backup check in case guided planner missed something)
+        for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
+            if (path_segments_[robot_idx].empty()) continue;
+
+            auto robot = robots_[robot_idx];
+            for (size_t part = 0; part < robot->numParts(); ++part) {
+                const auto& transform = robot->getTransform(current_states[robot_idx], part);
+
+                fcl::CollisionObjectf robot_co(robot->getCollisionGeometry(part));
+                robot_co.setTranslation(transform.translation());
+                robot_co.setRotation(transform.rotation());
+                robot_co.computeAABB();
+
+                fcl::DefaultCollisionData<float> collision_data;
+                collision_manager_->collide(&robot_co, &collision_data,
+                    fcl::DefaultCollisionFunction<float>);
+
+                if (collision_data.result.isCollision()) {
+                    // Record environment collision
+                    SegmentCollision collision;
+                    collision.type = SegmentCollision::ROBOT_OBSTACLE;
+                    collision.robot_index_1 = robot_idx;
+                    collision.robot_index_2 = robot_idx;  // Not used for obstacle collision
+                    collision.timestep = timestep;
+                    collision.part_index_1 = part;
+                    collision.part_index_2 = 0;
+
+                    const PathSegment* seg = findSegmentAtTimestep(robot_idx, timestep);
+                    collision.segment_index_1 = seg ? seg->segment_index : path_segments_[robot_idx].size() - 1;
+                    collision.segment_index_2 = collision.segment_index_1;
+
+                    segment_collisions_.push_back(collision);
+
+#ifdef DBG_PRINTS
+                    std::cout << "  Robot-obstacle collision: Robot " << robot_idx
+                              << " at timestep " << timestep << std::endl;
+#endif
                 }
             }
         }
@@ -731,7 +944,7 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
     const std::vector<double>& subproblem_env_min,
     const std::vector<double>& subproblem_env_max)
 {
-    std::cout << "Using composite (coupled RRT) planner on subproblem..." << std::endl;
+    std::cout << "Using composite DB-RRT planner on subproblem..." << std::endl;
     std::cout << "  Subproblem robots: ";
     for (size_t idx : robot_indices) {
         std::cout << idx << " ";
@@ -742,67 +955,125 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
     auto subproblem_obstacles = getObstaclesInRegion(subproblem_env_min, subproblem_env_max);
     std::cout << "  Subproblem obstacles: " << subproblem_obstacles.size() << std::endl;
 
-    // Create planning problem for subproblem
-    PlanningProblem problem;
+    // Build the CompositeDBRRT problem
+    CompositeDBRRTProblem problem;
     problem.env_min = subproblem_env_min;
     problem.env_max = subproblem_env_max;
     problem.obstacles = subproblem_obstacles;
+    problem.dynobench_obstacles = dynobench_obstacles_;  // Use precomputed dynobench obstacles
 
     // Add robot specifications for robots in subproblem
     for (size_t i = 0; i < robot_indices.size(); ++i) {
         size_t robot_idx = robot_indices[i];
 
-        RobotSpec robot_spec;
+        CompositeRobotSpec robot_spec;
         robot_spec.type = robot_types_[robot_idx];
         robot_spec.start = subproblem_starts[i];
         robot_spec.goal = subproblem_goals[i];
         problem.robots.push_back(robot_spec);
     }
 
-    // Create planner and solve
-    CoupledRRTPlanner planner(config_.coupled_rrt_config);
-    PlanningResult result = planner.plan(problem);
+    // Create and run the CompositeDBRRT planner
+    CompositeDBRRTPlanner planner(config_.composite_dbrrt_config);
+    CompositeDBRRTResult composite_result = planner.plan(problem);
 
-    std::cout << "Coupled RRT planning completed in " << result.planning_time << " seconds" << std::endl;
-    std::cout << "Solution found: " << (result.solved ? "Yes" : "No") << std::endl;
+    std::cout << "Composite DB-RRT planning completed in " << composite_result.planning_time << " seconds" << std::endl;
+    std::cout << "Solution found: " << (composite_result.solved ? "Yes" : "No") << std::endl;
 
-    if (result.solved && result.path) {
-        std::cout << "Path has " << result.path->getStateCount() << " states and "
-                  << result.path->getControlCount() << " controls" << std::endl;
-    } else {
-        std::cout << "No solution found by coupled RRT planner" << std::endl;
+    // Convert to PlanningResult format
+    PlanningResult result;
+    result.solved = composite_result.solved;
+    result.planning_time = composite_result.planning_time;
+    result.path = nullptr;  // We store individual paths separately
+
+    if (composite_result.solved && composite_result.trajectories.size() == robot_indices.size()) {
+        // Store individual paths in the result's individual_paths vector
+        for (size_t i = 0; i < robot_indices.size(); ++i) {
+            size_t robot_idx = robot_indices[i];
+            auto path = convertDynobenchTrajectory(composite_result.trajectories[i], robots_[robot_idx]);
+            result.individual_paths.push_back(path);
+
+            std::cout << "  Robot " << robot_idx << ": trajectory with "
+                      << composite_result.trajectories[i].states.size() << " states" << std::endl;
+        }
+    } else if (!composite_result.solved) {
+        std::cout << "No solution found by composite DB-RRT planner" << std::endl;
     }
 
     return result;
 }
 
-void MRSyCLoPPlanner::resolveCollisions()
+bool MRSyCLoPPlanner::resolveCollisions()
 {
-    int total_attempts = 0;
+    // Keep resolving collisions until none remain or a collision exhausts all strategies
+    while (!segment_collisions_.empty()) {
+        // Check for timeout before attempting to resolve each collision
+        if (isTimeoutExceeded()) {
+            std::cerr << "Planning timeout exceeded during collision resolution ("
+                      << segment_collisions_.size() << " collisions remaining)" << std::endl;
 
-    while (!segment_collisions_.empty() &&
-           total_attempts < config_.collision_resolution_config.max_total_resolution_attempts) {
-        total_attempts++;
+            // Log the collision we were about to attempt as timed out
+            CollisionResolutionEntry entry;
+            entry.collision_number = resolution_stats_.total_collisions_encountered + 1;
+            entry.robot_1 = segment_collisions_[0].robot_index_1;
+            entry.robot_2 = segment_collisions_[0].robot_index_2;
+            entry.timestep = segment_collisions_[0].timestep;
+            entry.resolved = false;
+            entry.outcome = "timeout";
+            resolution_stats_.collision_log.push_back(entry);
+            return false;
+        }
+
+        resolution_stats_.total_collisions_encountered++;
 
         SegmentCollision collision = segment_collisions_[0];
 
-#ifdef DBG_PRINTS
-        std::cout << "Resolving collision " << total_attempts << ": Robots "
+        // Create log entry for this collision
+        CollisionResolutionEntry entry;
+        entry.collision_number = resolution_stats_.total_collisions_encountered;
+        entry.robot_1 = collision.robot_index_1;
+        entry.robot_2 = collision.robot_index_2;
+        entry.timestep = collision.timestep;
+
+        std::cout << "Resolving collision " << resolution_stats_.total_collisions_encountered << ": Robots "
                   << collision.robot_index_1 << " and " << collision.robot_index_2
                   << " at timestep " << collision.timestep << std::endl;
-#endif
 
-        bool resolved = resolveCollisionWithStrategies(collision);
+        bool resolved = resolveCollisionWithStrategies(collision, entry);
+
+        // Finalize the entry
+        entry.resolved = resolved;
+        if (resolved) {
+            entry.outcome = "resolved";
+        } else if (isTimeoutExceeded()) {
+            entry.outcome = "timeout";
+        } else {
+            entry.outcome = "strategies_exhausted";
+        }
+        resolution_stats_.collision_log.push_back(entry);
 
         if (!resolved) {
-            std::cerr << "Failed to resolve collision after all strategy attempts" << std::endl;
-            return;  // Planning failed
+            std::cerr << "Failed to resolve collision " << entry.collision_number
+                      << " (outcome: " << entry.outcome << ", "
+                      << entry.attempts.size() << " strategy attempts made)" << std::endl;
+            return false;  // Planning failed - problem may be too hard
         }
+        resolution_stats_.total_collisions_resolved++;
     }
 
-#ifdef DBG_PRINTS
-    std::cout << "All collisions resolved successfully" << std::endl;
-#endif
+    std::cout << "All collisions resolved successfully after " << resolution_stats_.total_collisions_resolved << " collision resolutions" << std::endl;
+    return true;
+}
+
+bool MRSyCLoPPlanner::isTimeoutExceeded() const
+{
+    if (config_.max_total_time <= 0.0) {
+        return false;  // No timeout configured
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(now - planning_start_time_).count();
+    return elapsed >= config_.max_total_time;
 }
 
 MRSyCLoPResult MRSyCLoPPlanner::plan()
@@ -812,35 +1083,85 @@ MRSyCLoPResult MRSyCLoPPlanner::plan()
     }
 
     MRSyCLoPResult result;
-    auto start_time = std::chrono::steady_clock::now();
+    planning_start_time_ = std::chrono::steady_clock::now();
 
     try {
-        // Compute high-level paths over decomposition
+        // Phase 1: Compute high-level paths over decomposition
+        std::cout << "[Phase 1] Computing high-level paths..." << std::endl;
         computeHighLevelPaths();
+        std::cout << "[Phase 1] High-level paths computed" << std::endl;
 
-        // Compute guided low-level paths
-        computeGuidedPaths();
-
-        // Segment guided paths
-        segmentGuidedPaths();
-
-        // Check segments for collisions
-        bool collisions_found = checkSegmentsForCollisions();
-
-        // If collisions are found, decide how to resolve them
-        if (collisions_found) {
-            resolveCollisions();
+        if (isTimeoutExceeded()) {
+            std::cerr << "Planning timeout exceeded after computing high-level paths" << std::endl;
+            result.success = false;
+            result.failure_reason = "timeout_high_level_paths";
+            auto end_time = std::chrono::steady_clock::now();
+            result.planning_time = std::chrono::duration<double>(end_time - planning_start_time_).count();
+            result.resolution_stats = resolution_stats_;
+            saveDecompositionToFile(decomp_, "final");
+            return result;
         }
 
-        result.success = true; // Placeholder
+        // Phase 2: Compute guided low-level paths
+        std::cout << "[Phase 2] Computing guided paths..." << std::endl;
+        computeGuidedPaths();
+        std::cout << "[Phase 2] Guided paths computed" << std::endl;
+
+        if (isTimeoutExceeded()) {
+            std::cerr << "Planning timeout exceeded after computing guided paths" << std::endl;
+            result.success = false;
+            result.failure_reason = "timeout_guided_paths";
+            auto end_time = std::chrono::steady_clock::now();
+            result.planning_time = std::chrono::duration<double>(end_time - planning_start_time_).count();
+            result.resolution_stats = resolution_stats_;
+            saveDecompositionToFile(decomp_, "final");
+            return result;
+        }
+
+        // Phase 3: Segment guided paths
+        std::cout << "[Phase 3] Segmenting guided paths..." << std::endl;
+        segmentGuidedPaths();
+        std::cout << "[Phase 3] Segmentation complete" << std::endl;
+
+        // Phase 4: Check segments for collisions
+        std::cout << "[Phase 4] Checking for collisions..." << std::endl;
+        bool collisions_found = checkSegmentsForCollisions();
+        std::cout << "[Phase 4] Collision check complete: "
+                  << segment_collisions_.size() << " collisions found" << std::endl;
+
+        // Phase 5: If collisions are found, resolve them
+        if (collisions_found) {
+            std::cout << "[Phase 5] Resolving collisions..." << std::endl;
+            bool collisions_resolved = resolveCollisions();
+            if (!collisions_resolved) {
+                std::cerr << "Planning failed: could not resolve all collisions" << std::endl;
+                result.success = false;
+                if (isTimeoutExceeded()) {
+                    result.failure_reason = "timeout_collision_resolution";
+                } else {
+                    result.failure_reason = "strategies_exhausted";
+                }
+            } else {
+                std::cout << "[Phase 5] All collisions resolved" << std::endl;
+                result.success = true;
+            }
+        } else {
+            std::cout << "[Phase 5] No collisions to resolve" << std::endl;
+            result.success = true;
+        }
 
     } catch (const std::exception& e) {
-        std::cerr << "Planning failed: " << e.what() << std::endl;
+        std::cerr << "Planning failed with exception: " << e.what() << std::endl;
         result.success = false;
+        result.failure_reason = std::string("exception: ") + e.what();
     }
 
     auto end_time = std::chrono::steady_clock::now();
-    result.planning_time = std::chrono::duration<double>(end_time - start_time).count();
+    result.planning_time = std::chrono::duration<double>(end_time - planning_start_time_).count();
+    result.resolution_stats = resolution_stats_;
+
+    // Always save final decomposition state for visualization (regardless of success/failure)
+    saveDecompositionToFile(decomp_, "final");
 
     return result;
 }
@@ -849,47 +1170,113 @@ MRSyCLoPResult MRSyCLoPPlanner::plan()
 // Collision Resolution - Modular Strategy System
 // ============================================================================
 
-bool MRSyCLoPPlanner::resolveCollisionWithStrategies(const SegmentCollision& collision)
+// Helper to check if a collision between the same robot pair at the same timestep persists
+// A collision is considered "the same" only if it involves the same two robots AND same timestep
+// If the collision is at a different timestep, it's a new collision that gets fresh strategy attempts
+// For ROBOT_OBSTACLE collisions, robot_1 == robot_2, so we check if the same robot still has an obstacle collision
+bool MRSyCLoPPlanner::collisionPersistsForRobots(size_t robot_1, size_t robot_2, int timestep) const
+{
+    for (const auto& coll : segment_collisions_) {
+        if (coll.timestep == timestep) {
+            if (coll.type == SegmentCollision::ROBOT_ROBOT) {
+                if ((coll.robot_index_1 == robot_1 && coll.robot_index_2 == robot_2) ||
+                    (coll.robot_index_1 == robot_2 && coll.robot_index_2 == robot_1)) {
+                    return true;
+                }
+            } else if (coll.type == SegmentCollision::ROBOT_OBSTACLE) {
+                // For obstacle collisions, robot_1 == robot_2
+                if (coll.robot_index_1 == robot_1) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool MRSyCLoPPlanner::resolveCollisionWithStrategies(const SegmentCollision& collision,
+                                                      CollisionResolutionEntry& log_entry)
 {
     const auto& config = config_.collision_resolution_config;
 
-    // Strategy 1: Decomposition Refinement
-    if (config.max_decomposition_attempts > 0) {
-#ifdef DBG_PRINTS
-        std::cout << "  Trying decomposition refinement (max "
-                  << config.max_decomposition_attempts << " levels)..." << std::endl;
-#endif
+    // Calculate max expansion layers if auto-detect
+    int max_expansion_layers = config.max_expansion_layers;
+    if (max_expansion_layers < 0) {
+        max_expansion_layers = calculateMaxExpansionLayers();
+    }
 
-        if (resolveWithDecompositionRefinement(collision, config.max_decomposition_attempts)) {
-            return true;  // Success
+    // Cycle detection: track collision counts per robot pair and escalate
+    // the minimum expansion layer when the same pair keeps colliding
+    int min_expansion_layer = 0;
+    if (config.escalation_frequency > 0) {
+        auto pair_key = std::make_tuple(
+            std::min(collision.robot_index_1, collision.robot_index_2),
+            std::max(collision.robot_index_1, collision.robot_index_2),
+            collision.timestep);
+        int pair_count = ++robot_pair_collision_counts_[pair_key];
+        min_expansion_layer = (pair_count - 1) / config.escalation_frequency;
+        min_expansion_layer = std::min(min_expansion_layer, max_expansion_layers);
+
+        if (min_expansion_layer > 0) {
+            std::cout << "  Cycle detection: robot pair (" << std::get<0>(pair_key) << ", "
+                      << std::get<1>(pair_key) << ") at timestep " << std::get<2>(pair_key)
+                      << " collision #" << pair_count
+                      << ", escalating to min expansion layer " << min_expansion_layer
+                      << std::endl;
         }
     }
 
-    // Strategy 2: Subproblem Expansion
-    if (config.max_subproblem_expansion_attempts > 0) {
-#ifdef DBG_PRINTS
-        std::cout << "  Trying subproblem expansion (max "
-                  << config.max_subproblem_expansion_attempts << " attempts)..." << std::endl;
-#endif
+    // Strategy 1: Hierarchical Expansion + Refinement
+    // This combines the old decomposition refinement and subproblem expansion into one
+    // unified hierarchical approach:
+    // - expansion_layer=0: refine just the collision cell (K times)
+    // - expansion_layer=1,2,...: expand to neighbors, then refine all cells (K times each)
+    // - Continue until expansion covers the whole decomposition
+    if (config.max_refinement_levels > 0) {
+        std::cout << "  Trying hierarchical expansion+refinement (max "
+                  << config.max_refinement_levels << " refinement levels, max "
+                  << max_expansion_layers << " expansion layers, min "
+                  << min_expansion_layer << " expansion layer)..." << std::endl;
 
-        if (resolveWithSubproblemExpansion(collision, config.max_subproblem_expansion_attempts)) {
-            return true;  // Success
+        if (resolveWithHierarchicalExpansionRefinement(
+                collision,
+                config.max_refinement_levels,
+                max_expansion_layers,
+                min_expansion_layer,
+                log_entry)) {
+            std::cout << "  Hierarchical expansion+refinement resolved the collision" << std::endl;
+            return true;
         }
+
+        // Check if we timed out during hierarchical resolution
+        if (isTimeoutExceeded()) {
+            std::cerr << "  Timeout during hierarchical expansion+refinement" << std::endl;
+            return false;
+        }
+
+        std::cout << "  Hierarchical expansion+refinement exhausted, escalating to composite..." << std::endl;
     }
 
-    // Strategy 3: Composite Planner
+    // Strategy 2: Full-Problem Composite Planner (ALL robots, original starts/goals)
     if (config.max_composite_attempts > 0) {
-#ifdef DBG_PRINTS
-        std::cout << "  Trying composite planner (max "
+        std::cout << "  Trying full-problem composite planner (max "
                   << config.max_composite_attempts << " attempts)..." << std::endl;
-#endif
+        resolution_stats_.composite_planner_attempts++;
 
-        if (resolveWithCompositePlanner(collision, config.max_composite_attempts)) {
-            return true;  // Success
+        if (resolveWithFullProblemCompositePlanner(config.max_composite_attempts, log_entry)) {
+            std::cout << "  Full-problem composite planner resolved the collision" << std::endl;
+            resolution_stats_.composite_planner_successes++;
+            return true;
         }
+
+        std::cerr << "  Full-problem composite planner failed after " << config.max_composite_attempts
+                  << " attempts for collision at timestep " << collision.timestep << std::endl;
     }
 
-    // All strategies failed
+    // All strategies exhausted - collision could not be resolved
+    std::cerr << "  All collision resolution strategies exhausted for collision at timestep "
+              << collision.timestep << " between robots " << collision.robot_index_1
+              << " and " << collision.robot_index_2 << std::endl;
     return false;
 }
 
@@ -922,10 +1309,18 @@ oc::DecompositionPtr MRSyCLoPPlanner::createLocalDecomposition(
 #endif
 
     // Create and return local decomposition
-    return std::make_shared<GridDecompositionImpl>(
+    auto local_decomp = std::make_shared<GridDecompositionImpl>(
         static_cast<int>(subdivision_factor),
         decomp_->getDimension(),
         local_bounds);
+
+    // Record the refinement in the hierarchy
+    recordRefinement(parent_region, local_decomp);
+
+    // Save decomposition to file for visualization
+    saveDecompositionToFile(local_decomp, "local_region_" + std::to_string(parent_region));
+
+    return local_decomp;
 }
 
 bool MRSyCLoPPlanner::extractReplanningBounds(
@@ -1119,7 +1514,49 @@ void MRSyCLoPPlanner::recheckCollisionsFromTimestep(int start_timestep)
 
                     // Only report first collision found
 #ifdef DBG_PRINTS
-                    std::cout << "    Found collision at timestep " << timestep << std::endl;
+                    std::cout << "    Found robot-robot collision at timestep " << timestep << std::endl;
+#endif
+                    goto cleanup;
+                }
+            }
+        }
+
+        // Check robot-environment collisions at this timestep
+        for (size_t robot_idx = 0; robot_idx < robots_.size(); ++robot_idx) {
+            if (path_segments_[robot_idx].empty()) continue;
+
+            auto robot = robots_[robot_idx];
+            for (size_t part = 0; part < robot->numParts(); ++part) {
+                const auto& transform = robot->getTransform(current_states[robot_idx], part);
+
+                fcl::CollisionObjectf robot_co(robot->getCollisionGeometry(part));
+                robot_co.setTranslation(transform.translation());
+                robot_co.setRotation(transform.rotation());
+                robot_co.computeAABB();
+
+                fcl::DefaultCollisionData<float> collision_data;
+                collision_manager_->collide(&robot_co, &collision_data,
+                    fcl::DefaultCollisionFunction<float>);
+
+                if (collision_data.result.isCollision()) {
+                    // Found an obstacle collision - record it and stop
+                    const PathSegment* seg = findSegmentAtTimestep(robot_idx, timestep);
+
+                    SegmentCollision coll;
+                    coll.type = SegmentCollision::ROBOT_OBSTACLE;
+                    coll.robot_index_1 = robot_idx;
+                    coll.robot_index_2 = robot_idx;
+                    coll.timestep = timestep;
+                    coll.part_index_1 = part;
+                    coll.part_index_2 = 0;
+
+                    coll.segment_index_1 = seg ? seg->segment_index : path_segments_[robot_idx].size() - 1;
+                    coll.segment_index_2 = coll.segment_index_1;
+
+                    segment_collisions_.push_back(coll);
+
+#ifdef DBG_PRINTS
+                    std::cout << "    Found robot-obstacle collision at timestep " << timestep << std::endl;
 #endif
                     goto cleanup;
                 }
@@ -1138,6 +1575,60 @@ cleanup:
 #ifdef DBG_PRINTS
     std::cout << "    Total collisions found: " << segment_collisions_.size() << std::endl;
 #endif
+}
+
+int MRSyCLoPPlanner::getRecheckStartTimestep(const SegmentCollision& collision)
+{
+    // Find the segment start timestep for each robot involved
+    // Use the minimum of the two to ensure we catch all potential collisions
+    int segment_start_1 = collision.timestep;
+    int segment_start_2 = collision.timestep;
+
+    // For robot 1 - get the start of the current segment containing the collision
+    if (!path_segments_[collision.robot_index_1].empty() &&
+        collision.segment_index_1 < path_segments_[collision.robot_index_1].size()) {
+        segment_start_1 = path_segments_[collision.robot_index_1][collision.segment_index_1].start_timestep;
+    }
+
+    // For robot 2 (only for robot-robot collisions)
+    if (collision.type == SegmentCollision::ROBOT_ROBOT) {
+        if (!path_segments_[collision.robot_index_2].empty() &&
+            collision.segment_index_2 < path_segments_[collision.robot_index_2].size()) {
+            segment_start_2 = path_segments_[collision.robot_index_2][collision.segment_index_2].start_timestep;
+        }
+    }
+
+    // Default: use the start of the current segment (minimum of both robots)
+    int result = std::min(segment_start_1, segment_start_2);
+
+    // If flag is set, go back to the prior segment instead
+    if (config_.collision_resolution_config.recheck_from_prior_segment) {
+        int prior_start_1 = segment_start_1;
+        int prior_start_2 = segment_start_2;
+
+        // For robot 1
+        if (collision.segment_index_1 > 0 &&
+            collision.segment_index_1 - 1 < path_segments_[collision.robot_index_1].size()) {
+            prior_start_1 = path_segments_[collision.robot_index_1][collision.segment_index_1 - 1].start_timestep;
+        }
+
+        // For robot 2 (only for robot-robot collisions)
+        if (collision.type == SegmentCollision::ROBOT_ROBOT) {
+            if (collision.segment_index_2 > 0 &&
+                collision.segment_index_2 - 1 < path_segments_[collision.robot_index_2].size()) {
+                prior_start_2 = path_segments_[collision.robot_index_2][collision.segment_index_2 - 1].start_timestep;
+            }
+        }
+
+        result = std::min(prior_start_1, prior_start_2);
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "    Recheck start: using segment start " << result
+              << " (collision timestep was " << collision.timestep << ")" << std::endl;
+#endif
+
+    return result;
 }
 
 void MRSyCLoPPlanner::segmentSinglePath(
@@ -1203,7 +1694,7 @@ void MRSyCLoPPlanner::segmentSinglePath(
 
 void MRSyCLoPPlanner::integrateRefinedPaths(
     const std::vector<size_t>& robot_indices,
-    const std::vector<GuidedPlanningResult>& local_results,
+    const std::vector<mr_syclop::GuidedPlanningResult>& local_results,
     const PathUpdateInfo& update_info_1,
     const PathUpdateInfo& update_info_2)
 {
@@ -1318,354 +1809,436 @@ void MRSyCLoPPlanner::integrateRefinedPaths(
 }
 
 // ============================================================================
-// Strategy 1: Decomposition Refinement
+// Hierarchical Collision Resolution Strategy
 // ============================================================================
 
-bool MRSyCLoPPlanner::resolveWithDecompositionRefinement(
-    const SegmentCollision& collision,
-    int max_attempts)
+int MRSyCLoPPlanner::calculateMaxExpansionLayers() const
 {
-    // Extract collision state and locate region
-    size_t robot_1 = collision.robot_index_1;
-    size_t robot_2 = collision.robot_index_2;
-
-    ob::State* state_1 = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
-    ob::State* state_2 = robots_[robot_2]->getSpaceInformation()->getStateSpace()->allocState();
-
-    // Find the correct segments for the collision timestep (segments may have been updated)
-    const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
-    const PathSegment* seg_2 = findSegmentAtTimestep(robot_2, collision.timestep);
-
-    if (!seg_1 || !seg_2) {
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-        return false;
-    }
-
-    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
-    propagateToTimestep(robot_2, seg_2->segment_index, collision.timestep, state_2);
-
-    int collision_region = decomp_->locateRegion(state_1);
-
-#ifdef DBG_PRINTS
-    std::cout << "    Collision in region " << collision_region << std::endl;
-#endif
-
-    // Iterative refinement loop
-    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
-#ifdef DBG_PRINTS
-        std::cout << "    Refinement attempt " << attempt << "/" << max_attempts << std::endl;
-#endif
-
-        double subdivision_factor = std::pow(config_.collision_resolution_config.decomposition_subdivision_factor, attempt);
-
-        // Create local decomposition
-        oc::DecompositionPtr local_decomp = createLocalDecomposition(collision_region, subdivision_factor);
-
-        // Extract replanning bounds
-        PathUpdateInfo update_info_1, update_info_2;
-        if (!extractReplanningBounds(collision, collision_region, update_info_1, update_info_2)) {
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-            return false;
-        }
-
-        // Validate that entry/exit states are within local decomposition bounds
-        std::vector<ob::State*> local_starts = {update_info_1.entry_state, update_info_2.entry_state};
-        std::vector<ob::State*> local_goals = {update_info_1.exit_state, update_info_2.exit_state};
-
-        bool states_in_bounds = true;
-        for (const auto* state : local_starts) {
-            if (local_decomp->locateRegion(state) < 0) {
-                states_in_bounds = false;
-#ifdef DBG_PRINTS
-                std::cout << "      Entry state outside local decomposition bounds" << std::endl;
-#endif
-                break;
-            }
-        }
-        if (states_in_bounds) {
-            for (const auto* state : local_goals) {
-                if (local_decomp->locateRegion(state) < 0) {
-                    states_in_bounds = false;
-#ifdef DBG_PRINTS
-                    std::cout << "      Exit state outside local decomposition bounds" << std::endl;
-#endif
-                    break;
-                }
-            }
-        }
-
-        if (!states_in_bounds) {
-#ifdef DBG_PRINTS
-            std::cout << "      States outside bounds, trying next refinement level" << std::endl;
-#endif
-            // Free states
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
-            continue;
-        }
-
-        // MAPF replanning
-        auto mapf_solver = createMAPFSolver(
-            config_.mapf_config.method,
-            config_.mapf_config.region_capacity,
-            config_.planning_time_limit);
-
-        auto local_high_level_paths = mapf_solver->solve(
-            local_decomp, local_starts, local_goals,
-            obstacles_, config_.mapf_config.max_obstacle_volume_percent);
-
-        if (local_high_level_paths.empty() ||
-            local_high_level_paths[0].empty() ||
-            local_high_level_paths[1].empty()) {
-#ifdef DBG_PRINTS
-            std::cout << "      MAPF failed, trying next refinement level" << std::endl;
-#endif
-            // Free states
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
-            continue;
-        }
-
-        // Guided planning
-        auto guided_planner = createGuidedPlanner(
-            config_.guided_planner_method,
-            config_.guided_planner_config,
-            collision_manager_);
-
-        std::vector<size_t> robot_indices = {robot_1, robot_2};
-        std::vector<GuidedPlanningResult> local_results;
-
-        bool both_succeeded = true;
-        for (size_t i = 0; i < robot_indices.size(); ++i) {
-            size_t robot_idx = robot_indices[i];
-            GuidedPlanningResult result = guided_planner->solve(
-                robots_[robot_idx],
-                local_decomp,
-                local_starts[i],
-                local_goals[i],
-                local_high_level_paths[i],
-                robot_idx);
-
-            local_results.push_back(result);
-
-            if (!result.success) {
-                both_succeeded = false;
-                break;
-            }
-        }
-
-        if (!both_succeeded) {
-#ifdef DBG_PRINTS
-            std::cout << "      Guided planning failed, trying next refinement level" << std::endl;
-#endif
-            // Free states
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
-            robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
-            robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
-            continue;
-        }
-
-        // Success! Integrate refined paths
-#ifdef DBG_PRINTS
-        std::cout << "      Success at refinement level " << attempt << std::endl;
-#endif
-
-        integrateRefinedPaths(robot_indices, local_results, update_info_1, update_info_2);
-
-        // Re-check collisions
-        recheckCollisionsFromTimestep(collision.timestep);
-
-        // Free states
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-
-        return true;
-    }
-
-    // Max attempts reached
-    robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-    robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-    return false;
+    // For a grid decomposition of NxN, the maximum useful expansion from center is N/2
+    // This ensures we don't expand beyond the grid boundaries pointlessly
+    int num_regions = decomp_->getNumRegions();
+    int grid_side = static_cast<int>(std::sqrt(num_regions));
+    return (grid_side + 1) / 2;  // ceil(grid_side / 2)
 }
 
-// ============================================================================
-// Strategy 2: Subproblem Expansion (Stub)
-// ============================================================================
-
-bool MRSyCLoPPlanner::resolveWithSubproblemExpansion(
-    const SegmentCollision& collision,
-    int max_attempts)
+bool MRSyCLoPPlanner::expansionCoversFullDecomposition(int expansion_layers) const
 {
-    // Extract collision state and locate region
-    size_t robot_1 = collision.robot_index_1;
-    size_t robot_2 = collision.robot_index_2;
+    int num_regions = decomp_->getNumRegions();
 
-    ob::State* state_1 = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
-    ob::State* state_2 = robots_[robot_2]->getSpaceInformation()->getStateSpace()->allocState();
+    // For a 2D grid, expansion by L layers from center gives at most (2L+1)^2 cells
+    // If (2L+1)^2 >= num_regions, we've covered everything
+    int max_cells_in_expansion = (2 * expansion_layers + 1) * (2 * expansion_layers + 1);
 
-    // Find the correct segments for the collision timestep (segments may have been updated)
-    const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
-    const PathSegment* seg_2 = findSegmentAtTimestep(robot_2, collision.timestep);
+    return max_cells_in_expansion >= num_regions;
+}
 
-    if (!seg_1 || !seg_2) {
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-        return false;
-    }
-
-    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
-    propagateToTimestep(robot_2, seg_2->segment_index, collision.timestep, state_2);
-
-    int collision_region = decomp_->locateRegion(state_1);
-
-#ifdef DBG_PRINTS
-    std::cout << "    Collision in region " << collision_region << std::endl;
-#endif
-
-    // Get expanded region (collision cell + 8 neighbors)
-    std::vector<int> expanded_regions = getExpandedRegion(collision_region, 1);
-
-#ifdef DBG_PRINTS
-    std::cout << "    Expanded to " << expanded_regions.size() << " regions" << std::endl;
-#endif
-
-    // Extract replanning bounds
-    PathUpdateInfo update_info_1, update_info_2;
-    if (!extractReplanningBounds(collision, collision_region, update_info_1, update_info_2)) {
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-        return false;
-    }
-
-    // Iterative expansion loop
-    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
-#ifdef DBG_PRINTS
-        std::cout << "    Expansion attempt " << attempt << "/" << max_attempts << std::endl;
-#endif
-
-        oc::DecompositionPtr planning_decomp;
-
-        if (attempt == 1) {
-            // Attempt 1: Use global decomposition (no cost modification for now - simpler approach)
-#ifdef DBG_PRINTS
-            std::cout << "      Using global decomposition" << std::endl;
-#endif
-            planning_decomp = decomp_;
-        } else {
-            // Attempt 2+: Decompose all 9 cells
-            double subdivision_factor = std::pow(
-                config_.collision_resolution_config.decomposition_subdivision_factor,
-                attempt - 1);
-
-#ifdef DBG_PRINTS
-            std::cout << "      Creating multi-cell decomposition with factor "
-                      << subdivision_factor << std::endl;
-#endif
-
-            planning_decomp = createMultiCellDecomposition(expanded_regions, subdivision_factor);
-        }
-
-        // MAPF replanning
-        auto mapf_solver = createMAPFSolver(
-            config_.mapf_config.method,
-            config_.mapf_config.region_capacity,
-            config_.planning_time_limit);
-
-        std::vector<ob::State*> local_starts = {update_info_1.entry_state,
-                                                 update_info_2.entry_state};
-        std::vector<ob::State*> local_goals = {update_info_1.exit_state,
-                                                update_info_2.exit_state};
-
-        auto local_high_level_paths = mapf_solver->solve(
-            planning_decomp, local_starts, local_goals,
-            obstacles_, config_.mapf_config.max_obstacle_volume_percent);
-
-        if (local_high_level_paths.empty() ||
-            local_high_level_paths[0].empty() ||
-            local_high_level_paths[1].empty()) {
-#ifdef DBG_PRINTS
-            std::cout << "      MAPF failed, trying next expansion attempt" << std::endl;
-#endif
-            continue;
-        }
-
-        // Guided planning
-        auto guided_planner = createGuidedPlanner(
-            config_.guided_planner_method,
-            config_.guided_planner_config,
-            collision_manager_);
-
-        std::vector<size_t> robot_indices = {robot_1, robot_2};
-        std::vector<GuidedPlanningResult> local_results;
-
-        bool both_succeeded = true;
-        for (size_t i = 0; i < robot_indices.size(); ++i) {
-            size_t robot_idx = robot_indices[i];
-            GuidedPlanningResult result = guided_planner->solve(
-                robots_[robot_idx],
-                planning_decomp,
-                local_starts[i],
-                local_goals[i],
-                local_high_level_paths[i],
-                robot_idx);
-
-            local_results.push_back(result);
-
-            if (!result.success) {
-                both_succeeded = false;
-                break;
-            }
-        }
-
-        if (!both_succeeded) {
-#ifdef DBG_PRINTS
-            std::cout << "      Guided planning failed, trying next expansion attempt" << std::endl;
-#endif
-            continue;
-        }
-
-        // Success! Integrate refined paths
-#ifdef DBG_PRINTS
-        std::cout << "      Success at expansion attempt " << attempt << std::endl;
-#endif
-
-        integrateRefinedPaths(robot_indices, local_results, update_info_1, update_info_2);
-
-        // Re-check collisions
-        recheckCollisionsFromTimestep(collision.timestep);
-
-        // Free states
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
-        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
-        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
-
-        return true;
-    }
-
-    // Max attempts reached
+void MRSyCLoPPlanner::freeUpdateInfoStates(
+    size_t robot_1, size_t robot_2,
+    PathUpdateInfo& update_info_1, PathUpdateInfo& update_info_2)
+{
     robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.entry_state);
     robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(update_info_1.exit_state);
     robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.entry_state);
     robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(update_info_2.exit_state);
+}
+
+bool MRSyCLoPPlanner::extractReplanningBoundsForExpandedRegion(
+    const SegmentCollision& collision,
+    const std::vector<int>& expanded_regions,
+    PathUpdateInfo& update_info_1,
+    PathUpdateInfo& update_info_2)
+{
+    size_t robot_1 = collision.robot_index_1;
+    size_t robot_2 = collision.robot_index_2;
+
+    // Convert expanded_regions to a set for O(1) lookup
+    std::set<int> region_set(expanded_regions.begin(), expanded_regions.end());
+
+    // Helper lambda to extract bounds for one robot
+    auto extractForRobot = [&](size_t robot_idx, PathUpdateInfo& info) -> bool {
+        info.robot_index = robot_idx;
+
+        auto si = robots_[robot_idx]->getSpaceInformation();
+        ob::State* temp_state = si->getStateSpace()->allocState();
+
+        // Find entry to expanded region (scan backwards from collision)
+        int entry_timestep = 0;
+        size_t entry_segment = 0;
+        bool found_entry = false;
+
+        int collision_ts = collision.timestep;
+        for (int t = collision_ts; t >= 0; --t) {
+            const PathSegment* seg = findSegmentAtTimestep(robot_idx, t);
+            if (!seg) break;
+
+            propagateToTimestep(robot_idx, seg->segment_index, t, temp_state);
+            int region = decomp_->locateRegion(temp_state);
+
+            // Check if region is NOT in the expanded set
+            if (region_set.find(region) == region_set.end()) {
+                // Found entry point (one timestep after leaving the region set)
+                entry_timestep = t + 1;
+                entry_segment = seg->segment_index;
+                if (entry_timestep >= seg->end_timestep &&
+                    seg->segment_index + 1 < path_segments_[robot_idx].size()) {
+                    entry_segment = seg->segment_index + 1;
+                }
+                found_entry = true;
+                break;
+            }
+        }
+
+        if (!found_entry) {
+            // Robot starts in the expanded region
+            entry_timestep = 0;
+            entry_segment = 0;
+        }
+
+        // Find exit from expanded region (scan forwards)
+        int exit_timestep = -1;
+        size_t exit_segment = 0;
+        bool found_exit = false;
+
+        int max_timestep = 0;
+        if (!path_segments_[robot_idx].empty()) {
+            max_timestep = path_segments_[robot_idx].back().end_timestep;
+        }
+
+        for (int t = collision_ts; t < max_timestep; ++t) {
+            const PathSegment* seg = findSegmentAtTimestep(robot_idx, t);
+            if (!seg) break;
+
+            propagateToTimestep(robot_idx, seg->segment_index, t, temp_state);
+            int region = decomp_->locateRegion(temp_state);
+
+            // Check if region is NOT in the expanded set
+            if (region_set.find(region) == region_set.end()) {
+                exit_timestep = t;
+                exit_segment = seg->segment_index;
+                found_exit = true;
+                break;
+            }
+        }
+
+        if (!found_exit) {
+            // Robot's goal is in the expanded region
+            exit_timestep = max_timestep;
+            exit_segment = path_segments_[robot_idx].size();
+        }
+
+        // Allocate and set entry/exit states
+        info.entry_state = si->getStateSpace()->allocState();
+        info.exit_state = si->getStateSpace()->allocState();
+
+        if (entry_timestep == 0) {
+            si->copyState(info.entry_state, start_states_[robot_idx]);
+        } else {
+            propagateToTimestep(robot_idx, entry_segment, entry_timestep, info.entry_state);
+        }
+
+        if (exit_timestep >= max_timestep) {
+            si->copyState(info.exit_state, goal_states_[robot_idx]);
+        } else {
+            propagateToTimestep(robot_idx, exit_segment, exit_timestep, info.exit_state);
+        }
+
+        info.start_timestep = entry_timestep;
+        info.end_timestep = exit_timestep;
+        info.start_segment_idx = entry_segment;
+        info.end_segment_idx = exit_segment;
+
+        si->getStateSpace()->freeState(temp_state);
+        return true;
+    };
+
+    bool success_1 = extractForRobot(robot_1, update_info_1);
+    bool success_2 = extractForRobot(robot_2, update_info_2);
+
+    return success_1 && success_2;
+}
+
+bool MRSyCLoPPlanner::resolveWithHierarchicalExpansionRefinement(
+    const SegmentCollision& collision,
+    int max_refinement_levels,
+    int max_expansion_layers,
+    int min_expansion_layer,
+    CollisionResolutionEntry& log_entry)
+{
+    size_t robot_1 = collision.robot_index_1;
+    size_t robot_2 = collision.robot_index_2;
+
+    // Allocate temporary states for collision location
+    ob::State* state_1 = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
+    ob::State* state_2 = robots_[robot_2]->getSpaceInformation()->getStateSpace()->allocState();
+
+    // Locate collision region
+    const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
+    const PathSegment* seg_2 = findSegmentAtTimestep(robot_2, collision.timestep);
+
+    if (!seg_1 || !seg_2) {
+        std::cout << "    Cannot find segments at collision timestep" << std::endl;
+        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
+        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
+        return false;
+    }
+
+    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
+    int collision_region = decomp_->locateRegion(state_1);
+
+    std::cout << "    Collision in region " << collision_region << std::endl;
+
     robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
     robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
 
+    // Outer loop: expansion layers (0 = just collision cell, 1 = 9 cells, 2 = 25 cells, etc.)
+    // min_expansion_layer is set by cycle detection to skip small expansions that keep failing
+    for (int expansion_layer = min_expansion_layer; expansion_layer <= max_expansion_layers; ++expansion_layer) {
+
+        // Check for timeout before each expansion layer
+        if (isTimeoutExceeded()) {
+            std::cerr << "    Timeout during hierarchical expansion at layer " << expansion_layer << std::endl;
+            return false;
+        }
+
+        // Check termination: expansion covers the whole decomposition
+        if (expansion_layer > 0 && expansionCoversFullDecomposition(expansion_layer)) {
+            std::cout << "    Expansion layer " << expansion_layer
+                      << " covers entire decomposition, stopping expansion" << std::endl;
+            break;
+        }
+
+        // Get expanded region for this layer
+        std::vector<int> expanded_regions = getExpandedRegion(collision_region, expansion_layer);
+
+        std::cout << "    Expansion layer " << expansion_layer
+                  << ": " << expanded_regions.size() << " regions" << std::endl;
+
+        // Try K refinement levels at this expansion level
+        if (attemptRefinementAtExpansionLevel(
+                collision,
+                collision_region,
+                expanded_regions,
+                expansion_layer,
+                max_refinement_levels,
+                log_entry)) {
+            return true;
+        }
+
+        // Check if we timed out during refinement attempts
+        if (isTimeoutExceeded()) {
+            std::cerr << "    Timeout during refinement at expansion layer " << expansion_layer << std::endl;
+            return false;
+        }
+
+        // Refinement at this expansion level failed, expand further
+        std::cout << "    All refinement levels exhausted at expansion layer " << expansion_layer
+                  << ", trying wider expansion..." << std::endl;
+    }
+
+    // All expansion levels exhausted
+    std::cout << "    All expansion layers exhausted" << std::endl;
     return false;
 }
+
+bool MRSyCLoPPlanner::attemptRefinementAtExpansionLevel(
+    const SegmentCollision& collision,
+    int /* collision_region */,
+    const std::vector<int>& expanded_regions,
+    int expansion_layer,
+    int max_refinement_levels,
+    CollisionResolutionEntry& log_entry)
+{
+    resolution_stats_.decomposition_refinement_attempts++;
+
+    for (int refinement_level = 1; refinement_level <= max_refinement_levels; ++refinement_level) {
+        // Check for timeout before each refinement attempt
+        if (isTimeoutExceeded()) {
+            std::cerr << "      Timeout before refinement level " << refinement_level
+                      << " at expansion layer " << expansion_layer << std::endl;
+            return false;
+        }
+
+        std::cout << "      Refinement level " << refinement_level << "/" << max_refinement_levels
+                  << " at expansion layer " << expansion_layer << std::endl;
+
+        StrategyAttempt attempt;
+        attempt.strategy = "hierarchical_refinement";
+        attempt.expansion_layer = expansion_layer;
+        attempt.refinement_level = refinement_level;
+
+        if (refineExpandedRegion(collision, expanded_regions, refinement_level)) {
+            attempt.planning_succeeded = true;
+
+            // Refinement and replanning succeeded, check if collision is resolved
+            if (!collisionPersistsForRobots(collision.robot_index_1,
+                                            collision.robot_index_2,
+                                            collision.timestep)) {
+                std::cout << "      Collision resolved at expansion=" << expansion_layer
+                          << ", refinement=" << refinement_level << std::endl;
+                attempt.collision_resolved = true;
+                log_entry.attempts.push_back(attempt);
+                resolution_stats_.decomposition_refinement_successes++;
+                return true;
+            }
+
+            std::cout << "      Collision persists after refinement level " << refinement_level
+                      << ", trying higher refinement..." << std::endl;
+        } else {
+            attempt.planning_succeeded = false;
+            std::cout << "      Refinement level " << refinement_level << " failed (planning failed)" << std::endl;
+        }
+
+        log_entry.attempts.push_back(attempt);
+    }
+
+    return false;
+}
+
+bool MRSyCLoPPlanner::refineExpandedRegion(
+    const SegmentCollision& collision,
+    const std::vector<int>& expanded_regions,
+    int refinement_level)
+{
+    size_t robot_1 = collision.robot_index_1;
+    size_t robot_2 = collision.robot_index_2;
+
+    // Calculate subdivision factor based on refinement level
+    double subdivision_factor = std::pow(
+        config_.collision_resolution_config.decomposition_subdivision_factor,
+        refinement_level);
+
+    // Create decomposition covering ALL cells in expanded region
+    // Each cell will be refined to (subdivision_factor x subdivision_factor) sub-cells
+    oc::DecompositionPtr local_decomp;
+
+    if (expanded_regions.size() == 1) {
+        // Single cell: use createLocalDecomposition
+        local_decomp = createLocalDecomposition(expanded_regions[0], subdivision_factor);
+    } else {
+        // Multiple cells: use createMultiCellDecomposition
+        // This handles refining each cell in the expanded region
+        local_decomp = createMultiCellDecomposition(expanded_regions, subdivision_factor);
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "        Created local decomposition with "
+              << local_decomp->getNumRegions() << " sub-regions" << std::endl;
+#endif
+
+    // Extract replanning bounds for the expanded region
+    PathUpdateInfo update_info_1, update_info_2;
+    if (!extractReplanningBoundsForExpandedRegion(
+            collision, expanded_regions, update_info_1, update_info_2)) {
+#ifdef DBG_PRINTS
+        std::cout << "        Failed to extract replanning bounds" << std::endl;
+#endif
+        return false;
+    }
+
+    // Validate that entry/exit states are within local decomposition bounds
+    std::vector<ob::State*> local_starts = {update_info_1.entry_state, update_info_2.entry_state};
+    std::vector<ob::State*> local_goals = {update_info_1.exit_state, update_info_2.exit_state};
+
+    bool states_in_bounds = true;
+    for (const auto* state : local_starts) {
+        if (local_decomp->locateRegion(state) < 0) {
+            states_in_bounds = false;
+#ifdef DBG_PRINTS
+            std::cout << "        Entry state outside local decomposition bounds" << std::endl;
+#endif
+            break;
+        }
+    }
+    if (states_in_bounds) {
+        for (const auto* state : local_goals) {
+            if (local_decomp->locateRegion(state) < 0) {
+                states_in_bounds = false;
+#ifdef DBG_PRINTS
+                std::cout << "        Exit state outside local decomposition bounds" << std::endl;
+#endif
+                break;
+            }
+        }
+    }
+
+    if (!states_in_bounds) {
+        freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+        return false;
+    }
+
+    // MAPF replanning on the refined decomposition
+    auto mapf_solver = createMAPFSolver(
+        config_.mapf_config.method,
+        config_.mapf_config.region_capacity,
+        config_.planning_time_limit);
+
+    auto local_high_level_paths = mapf_solver->solve(
+        local_decomp, local_starts, local_goals,
+        obstacles_, config_.mapf_config.max_obstacle_volume_percent);
+
+    if (local_high_level_paths.empty() ||
+        local_high_level_paths[0].empty() ||
+        local_high_level_paths[1].empty()) {
+#ifdef DBG_PRINTS
+        std::cout << "        MAPF failed" << std::endl;
+#endif
+        freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+        return false;
+    }
+
+    // Guided planning
+    auto guided_planner = createGuidedPlannerWithDBRRT(
+        config_.guided_planner_method,
+        config_.guided_planner_config,
+        config_.db_rrt_config,
+        collision_manager_,
+        dynobench_obstacles_);
+
+    std::vector<size_t> robot_indices = {robot_1, robot_2};
+    std::vector<mr_syclop::GuidedPlanningResult> local_results;
+
+    bool both_succeeded = true;
+    for (size_t i = 0; i < robot_indices.size(); ++i) {
+        size_t robot_idx = robot_indices[i];
+        mr_syclop::GuidedPlanningResult result = guided_planner->solve(
+            robots_[robot_idx],
+            local_decomp,
+            local_starts[i],
+            local_goals[i],
+            local_high_level_paths[i],
+            robot_idx);
+
+        local_results.push_back(result);
+
+        if (!result.success) {
+            both_succeeded = false;
+            break;
+        }
+    }
+
+    if (!both_succeeded) {
+#ifdef DBG_PRINTS
+        std::cout << "        Guided planning failed" << std::endl;
+#endif
+        freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+        return false;
+    }
+
+    // Success! Integrate refined paths
+#ifdef DBG_PRINTS
+    std::cout << "        Planning succeeded, integrating refined paths" << std::endl;
+#endif
+
+    integrateRefinedPaths(robot_indices, local_results, update_info_1, update_info_2);
+
+    // Re-check collisions
+    recheckCollisionsFromTimestep(getRecheckStartTimestep(collision));
+
+    freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+
+    return true;
+}
+
 
 std::vector<int> MRSyCLoPPlanner::getExpandedRegion(int center_region, int expansion_layers)
 {
@@ -1759,22 +2332,112 @@ oc::DecompositionPtr MRSyCLoPPlanner::createMultiCellDecomposition(
               << " grid (" << (grid_length * grid_length) << " regions)" << std::endl;
 #endif
 
-    return std::make_shared<GridDecompositionImpl>(
+    auto multi_cell_decomp = std::make_shared<GridDecompositionImpl>(
         grid_length,
         decomp_->getDimension(),
         expanded_bounds);
+
+    // Record refinements for all regions involved in the multi-cell decomposition
+    // Each original region maps to a subset of the new decomposition cells
+    for (int region : regions) {
+        recordRefinement(region, multi_cell_decomp);
+    }
+
+    // Save decomposition to file for visualization
+    saveDecompositionToFile(multi_cell_decomp, "multi_cell");
+
+    return multi_cell_decomp;
 }
 
 // ============================================================================
-// Strategy 3: Composite Planner (Stub)
+// Full-Problem Composite Planner Fallback
 // ============================================================================
 
-bool MRSyCLoPPlanner::resolveWithCompositePlanner(
-    const SegmentCollision& collision,
-    int max_attempts)
+bool MRSyCLoPPlanner::resolveWithFullProblemCompositePlanner(int max_attempts,
+                                                             CollisionResolutionEntry& log_entry)
 {
-    // TODO: Implement composite planner strategy
-    std::cout << "    Composite planner strategy not yet implemented" << std::endl;
+    std::cout << "    Full-problem composite planner: planning ALL "
+              << robots_.size() << " robots from original starts to goals" << std::endl;
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        // Check for timeout before each composite attempt
+        if (isTimeoutExceeded()) {
+            std::cerr << "    Timeout before composite planner attempt " << attempt << std::endl;
+            return false;
+        }
+
+        std::cout << "    Full-problem composite attempt " << attempt << "/" << max_attempts << std::endl;
+
+        StrategyAttempt sa;
+        sa.strategy = "composite_planner";
+        sa.attempt_number = attempt;
+
+        // Build problem for ALL robots with original starts/goals
+        std::vector<size_t> all_robot_indices;
+        std::vector<std::vector<double>> all_starts;
+        std::vector<std::vector<double>> all_goals;
+
+        for (size_t i = 0; i < robots_.size(); ++i) {
+            all_robot_indices.push_back(i);
+            all_starts.push_back(starts_[i]);
+            all_goals.push_back(goals_[i]);
+        }
+
+        // Use full environment bounds
+        PlanningResult result = useCompositePlanner(
+            all_robot_indices,
+            all_starts,
+            all_goals,
+            env_min_,
+            env_max_);
+
+        if (result.solved && result.individual_paths.size() == robots_.size()) {
+            sa.planning_succeeded = true;
+            std::cout << "    Full-problem composite planner succeeded" << std::endl;
+
+            // Replace ALL robot paths with the composite solution
+            for (size_t i = 0; i < robots_.size(); ++i) {
+                mr_syclop::GuidedPlanningResult guided_result;
+                guided_result.success = true;
+                guided_result.path = result.individual_paths[i];
+                guided_result.planning_time = result.planning_time;
+                guided_result.robot_index = i;
+                guided_planning_results_[i] = guided_result;
+
+                // Re-segment the entire path
+                std::vector<PathSegment> new_segments;
+                segmentSinglePath(i, result.individual_paths[i], 0, new_segments);
+                path_segments_[i] = new_segments;
+
+                std::cout << "      Robot " << i << ": replaced path with "
+                          << result.individual_paths[i]->getStateCount() << " states, "
+                          << new_segments.size() << " segments" << std::endl;
+            }
+
+            // Re-check ALL collisions from timestep 0
+            recheckCollisionsFromTimestep(0);
+
+            // If no collisions remain, we're done
+            if (segment_collisions_.empty()) {
+                std::cout << "    Full-problem composite planner resolved all collisions" << std::endl;
+                sa.collision_resolved = true;
+                log_entry.attempts.push_back(sa);
+                return true;
+            }
+
+            std::cout << "    Full-problem composite: " << segment_collisions_.size()
+                      << " collisions remain, trying next attempt..." << std::endl;
+        } else {
+            sa.planning_succeeded = false;
+            std::cout << "    Full-problem composite attempt " << attempt << " failed to find solution" << std::endl;
+        }
+
+        log_entry.attempts.push_back(sa);
+    }
+
+    // Max attempts reached
+    std::cerr << "    Full-problem composite planner failed: exhausted all " << max_attempts
+              << " attempts" << std::endl;
     return false;
 }
 
@@ -1793,15 +2456,14 @@ void MRSyCLoPPlanner::exportDebugData(YAML::Node& output) const {
 
     auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(decomp_);
     if (grid_decomp) {
-        // Calculate grid size from bounds and region length
-        double width = env_max_[0] - env_min_[0];
-        double height = env_max_[1] - env_min_[1];
-        int grid_x = static_cast<int>(std::ceil(width / config_.decomposition_region_length));
-        int grid_y = static_cast<int>(std::ceil(height / config_.decomposition_region_length));
+        // Use decomposition_region_length for grid size (this is the 'length' parameter
+        // passed to GridDecomposition, representing cells per dimension)
+        // Note: OMPL GridDecomposition uses uniform grids where length^dim = total regions
+        int grid_length = config_.decomposition_region_length;
 
         YAML::Node grid_size_node;
-        grid_size_node.push_back(grid_x);
-        grid_size_node.push_back(grid_y);
+        grid_size_node.push_back(grid_length);
+        grid_size_node.push_back(grid_length);
         decomp_node["grid_size"] = grid_size_node;
 
         // Decomposition bounds
@@ -1827,6 +2489,12 @@ void MRSyCLoPPlanner::exportDebugData(YAML::Node& output) const {
             leads_node.push_back(path_node);
         }
         decomp_node["leads"] = leads_node;
+
+        // Hierarchical decomposition structure
+        // Format: [[1], [5, [9, 10, 11, 12], 7, 8], [3], [4]]
+        // where a simple integer means no refinement, and an array means
+        // [parent_region_id, [child_cells...]]
+        decomp_node["hierarchy"] = serializeDecompositionHierarchy();
     }
 
     output["decomposition"] = decomp_node;
@@ -1930,6 +2598,258 @@ void MRSyCLoPPlanner::exportDebugData(YAML::Node& output) const {
     output["guided_paths"] = guided_paths_node;
 }
 
+void MRSyCLoPPlanner::saveDecompositionToFile(
+    const oc::DecompositionPtr& decomp,
+    const std::string& label)
+{
+    // Skip if output directory not configured
+    if (config_.decomposition_output_dir.empty()) {
+        return;
+    }
+
+    auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(decomp);
+    if (!grid_decomp) {
+        std::cerr << "Warning: Cannot save decomposition - not a GridDecompositionImpl" << std::endl;
+        return;
+    }
+
+    // Create filename with counter and optional label
+    std::string filename;
+    if (label.empty()) {
+        filename = config_.decomposition_output_dir + "/decomposition_" +
+                   std::to_string(decomposition_save_counter_) + ".yaml";
+    } else {
+        filename = config_.decomposition_output_dir + "/decomposition_" +
+                   std::to_string(decomposition_save_counter_) + "_" + label + ".yaml";
+    }
+    decomposition_save_counter_++;
+
+    YAML::Node output;
+
+    // Basic decomposition info
+    output["type"] = "grid";
+    output["dimension"] = decomp->getDimension();
+    output["num_regions"] = decomp->getNumRegions();
+
+    // Compute grid length from number of regions (assuming square grid)
+    int num_regions = decomp->getNumRegions();
+    int dim = decomp->getDimension();
+    int grid_length = static_cast<int>(std::round(std::pow(num_regions, 1.0 / dim)));
+    output["grid_length"] = grid_length;
+
+    // Overall bounds (from first and last region)
+    YAML::Node bounds_node;
+    const auto& first_bounds = grid_decomp->getRegionBoundsPublic(0);
+    const auto& last_bounds = grid_decomp->getRegionBoundsPublic(num_regions - 1);
+
+    YAML::Node bounds_min_node;
+    YAML::Node bounds_max_node;
+    for (int d = 0; d < dim; ++d) {
+        bounds_min_node.push_back(first_bounds.low[d]);
+        bounds_max_node.push_back(last_bounds.high[d]);
+    }
+    bounds_node["min"] = bounds_min_node;
+    bounds_node["max"] = bounds_max_node;
+    output["bounds"] = bounds_node;
+
+    // Export all regions with their bounds
+    YAML::Node regions_node;
+    for (int rid = 0; rid < num_regions; ++rid) {
+        const auto& region_bounds = grid_decomp->getRegionBoundsPublic(rid);
+
+        YAML::Node region_node;
+        region_node["id"] = rid;
+
+        YAML::Node region_min_node;
+        YAML::Node region_max_node;
+        for (int d = 0; d < dim; ++d) {
+            region_min_node.push_back(region_bounds.low[d]);
+            region_max_node.push_back(region_bounds.high[d]);
+        }
+        region_node["min"] = region_min_node;
+        region_node["max"] = region_max_node;
+
+        // Also include neighbors
+        std::vector<int> neighbors;
+        grid_decomp->getNeighbors(rid, neighbors);
+        YAML::Node neighbors_node;
+        for (int neighbor : neighbors) {
+            neighbors_node.push_back(neighbor);
+        }
+        region_node["neighbors"] = neighbors_node;
+
+        regions_node.push_back(region_node);
+    }
+    output["regions"] = regions_node;
+
+    // Write to file
+    std::ofstream fout(filename);
+    if (!fout.is_open()) {
+        std::cerr << "Warning: Could not open file for decomposition output: " << filename << std::endl;
+        return;
+    }
+    fout << output;
+    fout.close();
+
+#ifdef DBG_PRINTS
+    std::cout << "  Saved decomposition to " << filename << std::endl;
+#endif
+}
+
+// ============================================================================
+// Decomposition Hierarchy Tracking
+// ============================================================================
+
+void MRSyCLoPPlanner::initializeDecompositionHierarchy()
+{
+    decomposition_hierarchy_.clear();
+
+    auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(decomp_);
+    if (!grid_decomp) {
+        return;
+    }
+
+    int num_regions = decomp_->getNumRegions();
+    decomposition_hierarchy_.reserve(num_regions);
+
+    for (int rid = 0; rid < num_regions; ++rid) {
+        DecompositionCell cell(rid);
+
+        // Store bounds for this cell
+        const auto& bounds = grid_decomp->getRegionBoundsPublic(rid);
+        int dim = decomp_->getDimension();
+        cell.bounds_min.resize(dim);
+        cell.bounds_max.resize(dim);
+        for (int d = 0; d < dim; ++d) {
+            cell.bounds_min[d] = bounds.low[d];
+            cell.bounds_max[d] = bounds.high[d];
+        }
+
+        decomposition_hierarchy_.push_back(cell);
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "  Initialized decomposition hierarchy with " << num_regions << " cells" << std::endl;
+#endif
+}
+
+DecompositionCell* MRSyCLoPPlanner::findCellByRegion(int region_id)
+{
+    // First check top-level cells
+    for (auto& cell : decomposition_hierarchy_) {
+        if (cell.region_id == region_id && !cell.isRefined()) {
+            return &cell;
+        }
+        // Also search recursively in case we need to find a parent
+        DecompositionCell* found = findCellByRegionRecursive(cell, region_id);
+        if (found) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+DecompositionCell* MRSyCLoPPlanner::findCellByRegionRecursive(DecompositionCell& cell, int region_id)
+{
+    if (cell.region_id == region_id) {
+        return &cell;
+    }
+
+    for (auto& child : cell.children) {
+        DecompositionCell* found = findCellByRegionRecursive(child, region_id);
+        if (found) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+void MRSyCLoPPlanner::recordRefinement(int parent_region, const oc::DecompositionPtr& local_decomp)
+{
+    // Find the cell to refine
+    DecompositionCell* parent_cell = nullptr;
+
+    // Search for the cell with this region_id that hasn't been refined yet
+    for (auto& cell : decomposition_hierarchy_) {
+        if (cell.region_id == parent_region && !cell.isRefined()) {
+            parent_cell = &cell;
+            break;
+        }
+    }
+
+    if (!parent_cell) {
+#ifdef DBG_PRINTS
+        std::cout << "  Warning: Could not find cell " << parent_region << " for refinement" << std::endl;
+#endif
+        return;
+    }
+
+    auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(local_decomp);
+    if (!grid_decomp) {
+        return;
+    }
+
+    int num_sub_regions = local_decomp->getNumRegions();
+    int dim = local_decomp->getDimension();
+
+    // Create child cells for each sub-region
+    for (int rid = 0; rid < num_sub_regions; ++rid) {
+        DecompositionCell child_cell;
+        // Use negative IDs to distinguish from global region IDs
+        // Format: -(parent_region * 1000 + local_rid)
+        child_cell.region_id = -(parent_region * 1000 + rid);
+
+        // Store bounds
+        const auto& bounds = grid_decomp->getRegionBoundsPublic(rid);
+        child_cell.bounds_min.resize(dim);
+        child_cell.bounds_max.resize(dim);
+        for (int d = 0; d < dim; ++d) {
+            child_cell.bounds_min[d] = bounds.low[d];
+            child_cell.bounds_max[d] = bounds.high[d];
+        }
+
+        parent_cell->children.push_back(child_cell);
+    }
+
+#ifdef DBG_PRINTS
+    std::cout << "  Recorded refinement: cell " << parent_region
+              << " -> " << num_sub_regions << " sub-cells" << std::endl;
+#endif
+}
+
+YAML::Node MRSyCLoPPlanner::serializeDecompositionHierarchy() const
+{
+    YAML::Node hierarchy_node;
+
+    for (const auto& cell : decomposition_hierarchy_) {
+        hierarchy_node.push_back(serializeCellRecursive(cell));
+    }
+
+    return hierarchy_node;
+}
+
+YAML::Node MRSyCLoPPlanner::serializeCellRecursive(const DecompositionCell& cell) const
+{
+    if (!cell.isRefined()) {
+        // Leaf cell - just return the region ID
+        return YAML::Node(cell.region_id);
+    }
+
+    // Refined cell - return an array where first element is the parent region ID
+    // and subsequent elements are the children (which may themselves be arrays)
+    YAML::Node cell_node;
+    cell_node.push_back(cell.region_id);  // Parent region ID
+
+    // Add children as a nested array
+    YAML::Node children_node;
+    for (const auto& child : cell.children) {
+        children_node.push_back(serializeCellRecursive(child));
+    }
+    cell_node.push_back(children_node);
+
+    return cell_node;
+}
+
 int main(int argc, char* argv[]) {
 
     // Parse command line arguments
@@ -1974,6 +2894,20 @@ int main(int argc, char* argv[]) {
         MRSyCLoPConfig config;
         config.decomposition_region_length = cfg["decomposition_region_length"].as<int>();
 
+        // Load maximum total planning time (0 = no limit)
+        if (cfg["max_total_time"]) {
+            config.max_total_time = cfg["max_total_time"].as<double>();
+        }
+
+        // Load decomposition resolution
+        if (cfg["decomposition"] && cfg["decomposition"]["resolution"]) {
+            auto res = cfg["decomposition"]["resolution"];
+            config.decomposition_resolution.clear();
+            for (size_t i = 0; i < res.size(); i++) {
+                config.decomposition_resolution.push_back(res[i].as<int>());
+            }
+        }
+
         // Load random seed
         if (cfg["seed"]) {
             config.seed = cfg["seed"].as<int>();
@@ -1992,6 +2926,11 @@ int main(int argc, char* argv[]) {
             config.segment_timesteps = cfg["segment_timesteps"].as<int>();
         }
 
+        // Load decomposition output directory
+        if (cfg["decomposition_output_dir"]) {
+            config.decomposition_output_dir = cfg["decomposition_output_dir"].as<std::string>();
+        }
+
         // Load MAPF configuration
         if (cfg["mapf"]) {
             if (cfg["mapf"]["method"]) {
@@ -2005,15 +2944,183 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Load guided planner configuration
+        if (cfg["guided_planner_method"]) {
+            config.guided_planner_method = cfg["guided_planner_method"].as<std::string>();
+        }
+
+        if (cfg["guided_planner"]) {
+            const YAML::Node& gp = cfg["guided_planner"];
+            if (gp["time_per_robot"]) {
+                config.guided_planner_config.time_per_robot = gp["time_per_robot"].as<double>();
+            }
+            if (gp["debug"]) {
+                config.guided_planner_config.debug = gp["debug"].as<bool>();
+            }
+            if (gp["num_free_volume_samples"]) {
+                config.guided_planner_config.num_free_volume_samples = gp["num_free_volume_samples"].as<int>();
+            }
+            if (gp["num_region_expansions"]) {
+                config.guided_planner_config.num_region_expansions = gp["num_region_expansions"].as<int>();
+            }
+            if (gp["num_tree_expansions"]) {
+                config.guided_planner_config.num_tree_expansions = gp["num_tree_expansions"].as<int>();
+            }
+            if (gp["prob_abandon_lead_early"]) {
+                config.guided_planner_config.prob_abandon_lead_early = gp["prob_abandon_lead_early"].as<double>();
+            }
+            if (gp["prob_shortest_path"]) {
+                config.guided_planner_config.prob_shortest_path = gp["prob_shortest_path"].as<double>();
+            }
+            if (gp["use_regional_nn"]) {
+                config.guided_planner_config.use_regional_nn = gp["use_regional_nn"].as<bool>();
+            }
+
+            // Parse DB-RRT specific config
+            if (gp["db_rrt"]) {
+                const YAML::Node& db = gp["db_rrt"];
+                if (db["motions_file"]) {
+                    config.db_rrt_config.motions_file = db["motions_file"].as<std::string>();
+                }
+                if (db["models_base_path"]) {
+                    config.db_rrt_config.models_base_path = db["models_base_path"].as<std::string>();
+                }
+                if (db["timelimit"]) {
+                    config.db_rrt_config.timelimit = db["timelimit"].as<double>();
+                }
+                if (db["max_expands"]) {
+                    config.db_rrt_config.max_expands = db["max_expands"].as<int>();
+                }
+                if (db["goal_region"]) {
+                    config.db_rrt_config.goal_region = db["goal_region"].as<double>();
+                }
+                if (db["delta"]) {
+                    config.db_rrt_config.delta = db["delta"].as<double>();
+                }
+                if (db["goal_bias"]) {
+                    config.db_rrt_config.goal_bias = db["goal_bias"].as<double>();
+                }
+                if (db["max_motions"]) {
+                    config.db_rrt_config.max_motions = db["max_motions"].as<int>();
+                }
+                if (db["seed"]) {
+                    config.db_rrt_config.seed = db["seed"].as<int>();
+                }
+                if (db["do_optimization"]) {
+                    config.db_rrt_config.do_optimization = db["do_optimization"].as<bool>();
+                }
+                if (db["use_nigh_nn"]) {
+                    config.db_rrt_config.use_nigh_nn = db["use_nigh_nn"].as<bool>();
+                }
+                if (db["debug"]) {
+                    config.db_rrt_config.debug = db["debug"].as<bool>();
+                }
+                if (db["solver_id"]) {
+                    config.db_rrt_config.solver_id = db["solver_id"].as<int>();
+                }
+                if (db["use_region_guidance"]) {
+                    config.db_rrt_config.use_region_guidance = db["use_region_guidance"].as<bool>();
+                }
+                if (db["region_bias"]) {
+                    config.db_rrt_config.region_bias = db["region_bias"].as<double>();
+                }
+            }
+
+            // Parse Composite DB-RRT config (for joint multi-robot planning)
+            if (gp["composite_dbrrt"]) {
+                const YAML::Node& cd = gp["composite_dbrrt"];
+                if (cd["time_limit"]) {
+                    config.composite_dbrrt_config.time_limit = cd["time_limit"].as<double>();
+                }
+                if (cd["delta"]) {
+                    config.composite_dbrrt_config.delta = cd["delta"].as<double>();
+                }
+                if (cd["goal_region"]) {
+                    config.composite_dbrrt_config.goal_region = cd["goal_region"].as<double>();
+                }
+                if (cd["max_motions"]) {
+                    config.composite_dbrrt_config.max_motions = cd["max_motions"].as<size_t>();
+                }
+                if (cd["expansions_per_iter"]) {
+                    config.composite_dbrrt_config.expansions_per_iter = cd["expansions_per_iter"].as<unsigned int>();
+                }
+                if (cd["goal_threshold"]) {
+                    config.composite_dbrrt_config.goal_threshold = cd["goal_threshold"].as<double>();
+                }
+                if (cd["goal_bias"]) {
+                    config.composite_dbrrt_config.goal_bias = cd["goal_bias"].as<double>();
+                }
+                if (cd["require_all_move"]) {
+                    config.composite_dbrrt_config.require_all_move = cd["require_all_move"].as<bool>();
+                }
+                if (cd["models_base_path"]) {
+                    config.composite_dbrrt_config.models_base_path = cd["models_base_path"].as<std::string>();
+                }
+                if (cd["seed"]) {
+                    config.composite_dbrrt_config.seed = cd["seed"].as<int>();
+                }
+                if (cd["debug"]) {
+                    config.composite_dbrrt_config.debug = cd["debug"].as<bool>();
+                }
+                // Parse motion files map
+                if (cd["motion_files"]) {
+                    for (const auto& mf : cd["motion_files"]) {
+                        std::string robot_type = mf.first.as<std::string>();
+                        std::string file_path = mf.second.as<std::string>();
+                        config.composite_dbrrt_config.motion_files[robot_type] = file_path;
+                    }
+                }
+            }
+        }
+
         // Set coupled RRT config if needed
         config.coupled_rrt_config.goal_threshold = 0.5;
         config.coupled_rrt_config.min_control_duration = 1;
         config.coupled_rrt_config.max_control_duration = 10;
 
+        // Parse collision resolution configuration
+        if (cfg["collision_resolution"]) {
+            const YAML::Node& cr = cfg["collision_resolution"];
+            // New hierarchical refinement parameters
+            if (cr["max_refinement_levels"]) {
+                config.collision_resolution_config.max_refinement_levels = cr["max_refinement_levels"].as<int>();
+            }
+            // Legacy support: map old name to new
+            if (cr["max_decomposition_attempts"]) {
+                config.collision_resolution_config.max_refinement_levels = cr["max_decomposition_attempts"].as<int>();
+            }
+            if (cr["max_expansion_layers"]) {
+                config.collision_resolution_config.max_expansion_layers = cr["max_expansion_layers"].as<int>();
+            }
+            if (cr["max_composite_attempts"]) {
+                config.collision_resolution_config.max_composite_attempts = cr["max_composite_attempts"].as<int>();
+            }
+            if (cr["composite_uses_full_problem"]) {
+                config.collision_resolution_config.composite_uses_full_problem = cr["composite_uses_full_problem"].as<bool>();
+            }
+            if (cr["decomposition_subdivision_factor"]) {
+                config.collision_resolution_config.decomposition_subdivision_factor = cr["decomposition_subdivision_factor"].as<double>();
+            }
+            if (cr["recheck_from_prior_segment"]) {
+                config.collision_resolution_config.recheck_from_prior_segment = cr["recheck_from_prior_segment"].as<bool>();
+            }
+            if (cr["escalation_frequency"]) {
+                config.collision_resolution_config.escalation_frequency = cr["escalation_frequency"].as<int>();
+            }
+        }
+
+        std::cout << "  Max total planning time: " << (config.max_total_time > 0 ? std::to_string(config.max_total_time) + "s" : "unlimited") << std::endl;
         std::cout << "  Decomposition region length: " << config.decomposition_region_length << std::endl;
+        std::cout << "  Decomposition resolution: [" << config.decomposition_resolution[0] << ", "
+                  << config.decomposition_resolution[1] << ", " << config.decomposition_resolution[2] << "]" << std::endl;
+        std::cout << "  Decomposition output dir: " << (config.decomposition_output_dir.empty() ? "(disabled)" : config.decomposition_output_dir) << std::endl;
         std::cout << "  Segment timesteps: " << config.segment_timesteps << std::endl;
         std::cout << "  MAPF method: " << config.mapf_config.method << std::endl;
         std::cout << "  MAPF region capacity: " << config.mapf_config.region_capacity << std::endl;
+        std::cout << "  Guided planner method: " << config.guided_planner_method << std::endl;
+        std::cout << "  Guided planner time per robot: " << config.guided_planner_config.time_per_robot << "s" << std::endl;
+        std::cout << "  DB-RRT motions file: " << config.db_rrt_config.motions_file << std::endl;
+        std::cout << "  DB-RRT models path: " << config.db_rrt_config.models_base_path << std::endl;
         std::cout << "  MAPF max obstacle volume: " << (config.mapf_config.max_obstacle_volume_percent * 100.0) << "%" << std::endl;
 
         // Load problem description
@@ -2086,6 +3193,67 @@ int main(int argc, char* argv[]) {
         output["success"] = result.success;
         output["planning_time"] = result.planning_time;
 
+        // Add failure reason (empty string if successful)
+        if (!result.failure_reason.empty()) {
+            output["failure_reason"] = result.failure_reason;
+        }
+
+        // Add resolution statistics
+        YAML::Node resolution_stats;
+        resolution_stats["total_collisions_encountered"] = result.resolution_stats.total_collisions_encountered;
+        resolution_stats["total_collisions_resolved"] = result.resolution_stats.total_collisions_resolved;
+
+        YAML::Node strategy_attempts;
+        strategy_attempts["decomposition_refinement"] = result.resolution_stats.decomposition_refinement_attempts;
+        strategy_attempts["subproblem_expansion"] = result.resolution_stats.subproblem_expansion_attempts;
+        strategy_attempts["composite_planner"] = result.resolution_stats.composite_planner_attempts;
+        resolution_stats["strategy_attempts"] = strategy_attempts;
+
+        YAML::Node strategy_successes;
+        strategy_successes["decomposition_refinement"] = result.resolution_stats.decomposition_refinement_successes;
+        strategy_successes["subproblem_expansion"] = result.resolution_stats.subproblem_expansion_successes;
+        strategy_successes["composite_planner"] = result.resolution_stats.composite_planner_successes;
+        resolution_stats["strategy_successes"] = strategy_successes;
+
+        // Add per-collision resolution log
+        YAML::Node collision_log_node;
+        for (const auto& entry : result.resolution_stats.collision_log) {
+            YAML::Node entry_node;
+            entry_node["collision_number"] = entry.collision_number;
+            entry_node["robot_1"] = static_cast<int>(entry.robot_1);
+            entry_node["robot_2"] = static_cast<int>(entry.robot_2);
+            entry_node["timestep"] = entry.timestep;
+            entry_node["resolved"] = entry.resolved;
+            entry_node["outcome"] = entry.outcome;
+
+            YAML::Node attempts_node;
+            for (const auto& attempt : entry.attempts) {
+                YAML::Node attempt_node;
+                attempt_node["strategy"] = attempt.strategy;
+                if (attempt.expansion_layer >= 0) {
+                    attempt_node["expansion_layer"] = attempt.expansion_layer;
+                }
+                if (attempt.refinement_level >= 0) {
+                    attempt_node["refinement_level"] = attempt.refinement_level;
+                }
+                if (attempt.attempt_number >= 0) {
+                    attempt_node["attempt_number"] = attempt.attempt_number;
+                }
+                attempt_node["planning_succeeded"] = attempt.planning_succeeded;
+                attempt_node["collision_resolved"] = attempt.collision_resolved;
+                attempts_node.push_back(attempt_node);
+            }
+            entry_node["attempts"] = attempts_node;
+
+            collision_log_node.push_back(entry_node);
+        }
+        resolution_stats["collision_log"] = collision_log_node;
+
+        output["resolution_stats"] = resolution_stats;
+
+        // Export debug data (decomposition, segments, collisions, etc.) - always export, even on failure
+        planner.exportDebugData(output);
+
         if (result.success) {
             YAML::Node result_node;
             const auto& guided_paths = planner.getGuidedPaths();
@@ -2126,9 +3294,6 @@ int main(int argc, char* argv[]) {
             }
 
             output["result"] = result_node;
-
-            // Export debug data (decomposition, segments, collisions, etc.)
-            planner.exportDebugData(output);
         }
 
         std::ofstream fout(outputFile);

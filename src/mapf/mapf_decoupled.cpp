@@ -1,6 +1,8 @@
 #include "mapf_decoupled.h"
 #include "../decomposition.h"
 #include <boost/graph/astar_search.hpp>
+#include <stdexcept>
+#include <iostream>
 #include <set>
 
 // ============================================================================
@@ -99,6 +101,7 @@ std::vector<int> DecoupledMAPFSolver::findPathAStar(
     std::vector<Vertex> parents(num_regions);
     std::vector<double> distances(num_regions);
 
+    bool found = false;
     try {
         boost::astar_search(graph, boost::vertex(start_region, graph),
                             SimpleHeuristic(),
@@ -109,6 +112,7 @@ std::vector<int> DecoupledMAPFSolver::findPathAStar(
                                                                                     boost::get(boost::vertex_index, graph)))
                                 .visitor(GoalVisitor(goal_region)));
     } catch (found_goal) {
+        found = true;
         // Reconstruct the path from start to goal
         int region = goal_region;
         int path_length = 1;
@@ -124,6 +128,12 @@ std::vector<int> DecoupledMAPFSolver::findPathAStar(
             path[i] = region;
             region = parents[region];
         }
+    }
+
+    if (!found) {
+        throw std::runtime_error("Decoupled A*: No path found from region " +
+                                 std::to_string(start_region) + " to region " +
+                                 std::to_string(goal_region));
     }
 
     return path;
@@ -147,6 +157,7 @@ std::vector<std::vector<int>> DecoupledMAPFSolver::solve(
 
     // Build the region graph from the decomposition (filters invalid regions)
     RegionGraph graph = buildRegionGraph(decomp, obstacles, max_obstacle_volume_percent);
+    int num_regions = decomp->getNumRegions();
 
     // Iterate over each robot and find independent paths
     for (size_t robot_idx = 0; robot_idx < start_states.size(); ++robot_idx) {
@@ -154,33 +165,105 @@ std::vector<std::vector<int>> DecoupledMAPFSolver::solve(
         int start_region = decomp->locateRegion(start_states[robot_idx]);
         int goal_region = decomp->locateRegion(goal_states[robot_idx]);
 
-        // Validate start region
+        // Validate that regions are valid
+        if (start_region < 0 || start_region >= num_regions) {
+            throw std::runtime_error("Decoupled A*: Start state for robot " +
+                                     std::to_string(robot_idx) +
+                                     " is outside decomposition bounds (region=" +
+                                     std::to_string(start_region) + ", num_regions=" +
+                                     std::to_string(num_regions) + ")");
+        }
+        if (goal_region < 0 || goal_region >= num_regions) {
+            throw std::runtime_error("Decoupled A*: Goal state for robot " +
+                                     std::to_string(robot_idx) +
+                                     " is outside decomposition bounds (region=" +
+                                     std::to_string(goal_region) + ", num_regions=" +
+                                     std::to_string(num_regions) + ")");
+        }
+
+        // Check if start/goal regions have excessive obstacle volume
+        // If so, find nearest valid neighboring region to use instead
+        int mapf_start_region = start_region;
+        int mapf_goal_region = goal_region;
+
         const auto& start_bounds = grid_decomp->getRegionBoundsPublic(start_region);
         double start_obstacle_percent = computeObstacleVolumePercent(start_bounds, obstacles);
         if (start_obstacle_percent > max_obstacle_volume_percent) {
-            throw std::runtime_error(
-                "DecoupledMAPFSolver: Start region " + std::to_string(start_region) +
-                " for robot " + std::to_string(robot_idx) +
-                " has " + std::to_string(start_obstacle_percent * 100.0) +
-                "% obstacle volume, exceeding threshold of " +
-                std::to_string(max_obstacle_volume_percent * 100.0) + "%");
+            // Find nearest valid neighbor
+            int nearest_valid = findNearestValidNeighbor(decomp, start_region, obstacles, max_obstacle_volume_percent);
+            if (nearest_valid < 0) {
+                throw std::runtime_error(
+                    "DecoupledMAPFSolver: Start region " + std::to_string(start_region) +
+                    " for robot " + std::to_string(robot_idx) +
+                    " has " + std::to_string(start_obstacle_percent * 100.0) +
+                    "% obstacle volume, and no valid neighboring region found");
+            }
+            mapf_start_region = nearest_valid;
         }
 
-        // Validate goal region
         const auto& goal_bounds = grid_decomp->getRegionBoundsPublic(goal_region);
         double goal_obstacle_percent = computeObstacleVolumePercent(goal_bounds, obstacles);
         if (goal_obstacle_percent > max_obstacle_volume_percent) {
-            throw std::runtime_error(
-                "DecoupledMAPFSolver: Goal region " + std::to_string(goal_region) +
-                " for robot " + std::to_string(robot_idx) +
-                " has " + std::to_string(goal_obstacle_percent * 100.0) +
-                "% obstacle volume, exceeding threshold of " +
-                std::to_string(max_obstacle_volume_percent * 100.0) + "%");
+            // Find nearest valid neighbor
+            int nearest_valid = findNearestValidNeighbor(decomp, goal_region, obstacles, max_obstacle_volume_percent);
+            if (nearest_valid < 0) {
+                throw std::runtime_error(
+                    "DecoupledMAPFSolver: Goal region " + std::to_string(goal_region) +
+                    " for robot " + std::to_string(robot_idx) +
+                    " has " + std::to_string(goal_obstacle_percent * 100.0) +
+                    "% obstacle volume, and no valid neighboring region found");
+            }
+            mapf_goal_region = nearest_valid;
         }
 
         // Find path using A*
-        high_level_paths[robot_idx] = findPathAStar(graph, start_region, goal_region);
+        high_level_paths[robot_idx] = findPathAStar(graph, mapf_start_region, mapf_goal_region);
     }
 
     return high_level_paths;
+}
+
+int DecoupledMAPFSolver::findNearestValidNeighbor(
+    oc::DecompositionPtr decomp,
+    int region,
+    const std::vector<fcl::CollisionObjectf*>& obstacles,
+    double max_obstacle_volume_percent)
+{
+    auto grid_decomp = std::dynamic_pointer_cast<GridDecompositionImpl>(decomp);
+    if (!grid_decomp) {
+        return -1;
+    }
+
+    // BFS to find nearest valid region
+    std::set<int> visited;
+    std::queue<int> queue;
+    queue.push(region);
+    visited.insert(region);
+
+    while (!queue.empty()) {
+        int current = queue.front();
+        queue.pop();
+
+        // Check if this region is valid
+        const auto& region_bounds = grid_decomp->getRegionBoundsPublic(current);
+        double obstacle_percent = computeObstacleVolumePercent(region_bounds, obstacles);
+
+        if (obstacle_percent <= max_obstacle_volume_percent) {
+            // Found a valid neighbor
+            return current;
+        }
+
+        // Add neighbors to queue
+        std::vector<int> neighbors;
+        decomp->getNeighbors(current, neighbors);
+        for (int neighbor : neighbors) {
+            if (visited.find(neighbor) == visited.end()) {
+                visited.insert(neighbor);
+                queue.push(neighbor);
+            }
+        }
+    }
+
+    // No valid neighbor found
+    return -1;
 }

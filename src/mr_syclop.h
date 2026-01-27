@@ -4,14 +4,17 @@
 #include <ompl/base/spaces/RealVectorStateSpace.h>
 #include <ompl/control/SpaceInformation.h>
 #include <fcl/fcl.h>
+#include <map>
 #include <memory>
+#include <tuple>
 #include <vector>
 #include <string>
 
 #include "decomposition.h"
 #include "robots.h"
 #include "coupled_rrt.h"
-#include "guided/guided_planner.h"
+#include "guided/guided_planner.h"  // Includes dynobench::Obstacle
+#include "composite_dbrrt.h"        // Composite DB-RRT planner
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
@@ -27,17 +30,35 @@ struct MAPFConfig {
 };
 
 struct CollisionResolutionConfig {
-    int max_decomposition_attempts = 3;           // How many decomposition refinement levels (0=skip)
-    int max_subproblem_expansion_attempts = 1;    // How many subproblem expansions (0=skip)
-    int max_composite_attempts = 1;               // How many composite planner attempts (0=skip)
-    int max_total_resolution_attempts = 10;       // Overall iteration limit
-    double decomposition_subdivision_factor = 2.0; // How much to subdivide each time
+    // Hierarchical refinement parameters
+    int max_refinement_levels = 3;                // K: refinement levels per expansion (0=skip)
+    double decomposition_subdivision_factor = 2.0; // Subdivision multiplier per refinement level
+
+    // Expansion parameters
+    int max_expansion_layers = -1;                // Max expansion layers (-1 = auto-detect based on grid)
+                                                  // Auto-detect: ceil(sqrt(num_regions)/2)
+
+    // Cycle detection: after this many collisions for the same robot pair,
+    // increase the minimum expansion layer by 1 (0 = disable escalation)
+    int escalation_frequency = 3;
+
+    // Composite planner fallback
+    int max_composite_attempts = 1;               // Composite planner attempts (0=skip)
+    bool composite_uses_full_problem = true;      // If true, composite plans ALL robots from original starts/goals
+
+    // Re-checking behavior
+    bool recheck_from_prior_segment = false;      // If true, start collision re-checking from prior segment start
 };
 
 struct MRSyCLoPConfig {
     int decomposition_region_length = 1;
+    std::vector<int> decomposition_resolution = {10, 10, 1};  // Grid cells in [x, y, z]
     double planning_time_limit = 60.0;
+    double max_total_time = 0.0;  // Maximum total planning time in seconds (0 = no limit)
     int seed = -1;  // Random seed (-1 for random)
+
+    // Decomposition output directory (empty string disables saving)
+    std::string decomposition_output_dir = "";
 
     // MAPF configuration
     MAPFConfig mapf_config;
@@ -47,7 +68,9 @@ struct MRSyCLoPConfig {
 
     // Guided planner configuration
     std::string guided_planner_method = "syclop_rrt";
-    GuidedPlannerConfig guided_planner_config;
+    mr_syclop::GuidedPlannerConfig guided_planner_config;
+    mr_syclop::DBRRTConfig db_rrt_config;  // DB-RRT specific config (for individual planning)
+    CompositeDBRRTConfig composite_dbrrt_config;  // Composite DB-RRT config (for joint planning)
 
     // Segmentation configuration
     int segment_timesteps = 30;  // Number of timesteps per segment
@@ -112,13 +135,87 @@ struct PathUpdateInfo {
 };
 
 // ============================================================================
+// Hierarchical Decomposition Cell Structure
+// ============================================================================
+
+// Represents a cell in the decomposition hierarchy
+// If children is empty, this is a leaf cell with the given region_id
+// If children is non-empty, this cell was refined and region_id is the parent
+struct DecompositionCell {
+    int region_id;                              // Original region ID in parent decomposition
+    std::vector<DecompositionCell> children;    // Child cells if refined (empty = leaf)
+
+    // Bounds of this cell (for visualization)
+    std::vector<double> bounds_min;
+    std::vector<double> bounds_max;
+
+    DecompositionCell() : region_id(-1) {}
+    explicit DecompositionCell(int id) : region_id(id) {}
+
+    bool isRefined() const { return !children.empty(); }
+};
+
+// ============================================================================
+// Strategy Attempt Log Entry
+// ============================================================================
+
+struct StrategyAttempt {
+    std::string strategy;          // "hierarchical_refinement" or "composite_planner"
+    int expansion_layer = -1;      // For hierarchical (-1 if N/A)
+    int refinement_level = -1;     // For hierarchical (-1 if N/A)
+    int attempt_number = -1;       // For composite planner attempt index (-1 if N/A)
+    bool planning_succeeded = false;  // Did the replanning itself succeed?
+    bool collision_resolved = false;  // Did the collision get resolved after this attempt?
+};
+
+// ============================================================================
+// Per-Collision Resolution Log Entry
+// ============================================================================
+
+struct CollisionResolutionEntry {
+    int collision_number = 0;      // 1-based index
+    size_t robot_1 = 0;
+    size_t robot_2 = 0;
+    int timestep = 0;
+    std::vector<StrategyAttempt> attempts;  // All strategy attempts for this collision
+    bool resolved = false;
+    std::string outcome;           // "resolved", "strategies_exhausted", "timeout"
+};
+
+// ============================================================================
+// Resolution Statistics Structure
+// ============================================================================
+
+struct ResolutionStats {
+    // Counts of how many times each strategy was attempted
+    int decomposition_refinement_attempts = 0;
+    int subproblem_expansion_attempts = 0;
+    int composite_planner_attempts = 0;
+
+    // Counts of how many times each strategy successfully resolved a collision
+    int decomposition_refinement_successes = 0;
+    int subproblem_expansion_successes = 0;
+    int composite_planner_successes = 0;
+
+    // Total collisions encountered and resolved
+    int total_collisions_encountered = 0;
+    int total_collisions_resolved = 0;
+
+    // Detailed per-collision resolution log
+    std::vector<CollisionResolutionEntry> collision_log;
+};
+
+// ============================================================================
 // Planning Result Structure
 // ============================================================================
 
 struct MRSyCLoPResult {
     bool success = false;
     double planning_time = 0.0;
-    // TODO: Add path/trajectory data structures as needed
+    std::string failure_reason;    // Empty on success; e.g. "timeout_high_level_paths",
+                                   // "timeout_guided_paths", "timeout_collision_resolution",
+                                   // "strategies_exhausted", "exception: ..."
+    ResolutionStats resolution_stats;
 };
 
 // ============================================================================
@@ -150,12 +247,12 @@ public:
     void computeGuidedPaths();
     void segmentGuidedPaths();
     bool checkSegmentsForCollisions();  // Checks robot-robot collisions only; obstacle avoidance is handled by guided planner
-    void resolveCollisions();
+    bool resolveCollisions();  // Returns true if all collisions were resolved
 
     // Accessors
     const std::vector<std::vector<int>>& getHighLevelPaths() const { return high_level_paths_; }
     const oc::DecompositionPtr& getDecomposition() const { return decomp_; }
-    const std::vector<GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
+    const std::vector<mr_syclop::GuidedPlanningResult>& getGuidedPaths() const { return guided_planning_results_; }
     const std::vector<std::vector<PathSegment>>& getPathSegments() const { return path_segments_; }
     const std::vector<std::shared_ptr<Robot>>& getRobots() const { return robots_; }
     const std::vector<SegmentCollision>& getCollisions() const { return segment_collisions_; }
@@ -184,19 +281,38 @@ private:
 
     // Planning state
     std::vector<std::vector<int>> high_level_paths_;
-    std::vector<GuidedPlanningResult> guided_planning_results_;
+    std::vector<mr_syclop::GuidedPlanningResult> guided_planning_results_;
     std::vector<std::vector<PathSegment>> path_segments_;  // Segments for each robot
     std::vector<SegmentCollision> segment_collisions_;     // Detected collisions
     bool problem_loaded_ = false;
+    ResolutionStats resolution_stats_;  // Track collision resolution statistics
+    std::map<std::tuple<size_t, size_t, int>, int> robot_pair_collision_counts_;  // Cycle detection: (robot1, robot2, timestep) -> count
+
+    // Timeout tracking
+    std::chrono::steady_clock::time_point planning_start_time_;
+    bool isTimeoutExceeded() const;
 
     // Collision manager for obstacles (shared with guided planners)
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager_;
 
+    // Precomputed dynobench obstacles (for DB-RRT solver)
+    std::vector<dynobench::Obstacle> dynobench_obstacles_;
+
+    // Hierarchical decomposition tracking
+    std::vector<DecompositionCell> decomposition_hierarchy_;  // One cell per initial region
+
     // Helper methods
     void setupDecomposition();
     void setupCollisionManager();
+    void setupDynobenchObstacles();  // Convert FCL obstacles to dynobench format
     void setupRobots();
     void cleanup();
+
+    // Composite DB-RRT planning (joint multi-robot planning)
+    void computeGuidedPathsWithCompositeDBRRT();
+    std::shared_ptr<oc::PathControl> convertDynobenchTrajectory(
+        const dynobench::Trajectory& traj,
+        const std::shared_ptr<Robot>& robot);
     std::vector<fcl::CollisionObjectf*> getObstaclesInRegion(
         const std::vector<double>& region_min,
         const std::vector<double>& region_max) const;
@@ -219,12 +335,49 @@ private:
         const std::vector<double>& subproblem_env_max);
 
     // Collision resolution - modular strategy system
-    bool resolveCollisionWithStrategies(const SegmentCollision& collision);
+    bool resolveCollisionWithStrategies(const SegmentCollision& collision,
+                                        CollisionResolutionEntry& log_entry);
+    bool collisionPersistsForRobots(size_t robot_1, size_t robot_2, int timestep) const;
 
-    // Strategy implementations
-    bool resolveWithDecompositionRefinement(const SegmentCollision& collision, int max_attempts);
-    bool resolveWithSubproblemExpansion(const SegmentCollision& collision, int max_attempts);
-    bool resolveWithCompositePlanner(const SegmentCollision& collision, int max_attempts);
+    // Hierarchical collision resolution strategy
+    bool resolveWithHierarchicalExpansionRefinement(
+        const SegmentCollision& collision,
+        int max_refinement_levels,
+        int max_expansion_layers,
+        int min_expansion_layer,
+        CollisionResolutionEntry& log_entry);
+
+    bool attemptRefinementAtExpansionLevel(
+        const SegmentCollision& collision,
+        int collision_region,
+        const std::vector<int>& expanded_regions,
+        int expansion_layer,
+        int max_refinement_levels,
+        CollisionResolutionEntry& log_entry);
+
+    bool refineExpandedRegion(
+        const SegmentCollision& collision,
+        const std::vector<int>& expanded_regions,
+        int refinement_level);
+
+    int calculateMaxExpansionLayers() const;
+    bool expansionCoversFullDecomposition(int expansion_layers) const;
+
+    // Full-problem composite planner fallback
+    bool resolveWithFullProblemCompositePlanner(int max_attempts,
+                                                CollisionResolutionEntry& log_entry);
+
+    // Replanning bounds for expanded region
+    bool extractReplanningBoundsForExpandedRegion(
+        const SegmentCollision& collision,
+        const std::vector<int>& expanded_regions,
+        PathUpdateInfo& update_info_1,
+        PathUpdateInfo& update_info_2);
+
+    void freeUpdateInfoStates(
+        size_t robot_1, size_t robot_2,
+        PathUpdateInfo& update_info_1,
+        PathUpdateInfo& update_info_2);
 
     // Helper methods for all strategies
     oc::DecompositionPtr createLocalDecomposition(
@@ -240,10 +393,11 @@ private:
         PathUpdateInfo& update_info_2);
     void integrateRefinedPaths(
         const std::vector<size_t>& robot_indices,
-        const std::vector<GuidedPlanningResult>& local_results,
+        const std::vector<mr_syclop::GuidedPlanningResult>& local_results,
         const PathUpdateInfo& update_info_1,
         const PathUpdateInfo& update_info_2);
     void recheckCollisionsFromTimestep(int start_timestep);
+    int getRecheckStartTimestep(const SegmentCollision& collision);
     void segmentSinglePath(
         size_t robot_idx,
         const std::shared_ptr<oc::PathControl>& path,
@@ -261,6 +415,20 @@ private:
     bool extractIndividualPaths(
         const std::shared_ptr<oc::PathControl>& compound_path,
         std::vector<std::shared_ptr<oc::PathControl>>& individual_paths);
+
+    // Decomposition saving (for visualization/debugging)
+    void saveDecompositionToFile(
+        const oc::DecompositionPtr& decomp,
+        const std::string& label = "");
+    mutable int decomposition_save_counter_ = 0;  // Counter for unique filenames
+
+    // Decomposition hierarchy tracking
+    void initializeDecompositionHierarchy();
+    DecompositionCell* findCellByRegion(int region_id);
+    DecompositionCell* findCellByRegionRecursive(DecompositionCell& cell, int region_id);
+    void recordRefinement(int parent_region, const oc::DecompositionPtr& local_decomp);
+    YAML::Node serializeDecompositionHierarchy() const;
+    YAML::Node serializeCellRecursive(const DecompositionCell& cell) const;
 };
 
 #endif // MR_SYCLOP_H

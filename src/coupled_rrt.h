@@ -49,6 +49,7 @@ struct PlanningResult {
     bool solved;                               // Whether exact solution was found
     double planning_time;                      // Time spent planning (seconds)
     std::shared_ptr<oc::PathControl> path;     // Solution path (compound path for all robots)
+    std::vector<std::shared_ptr<oc::PathControl>> individual_paths;  // Individual paths per robot (for composite DB-RRT)
 };
 
 // ============================================================================
