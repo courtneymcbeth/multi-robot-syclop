@@ -3246,6 +3246,7 @@ int main(int argc, char* argv[]) {
         config.coupled_rrt_config.goal_threshold = 0.5;
         config.coupled_rrt_config.min_control_duration = 1;
         config.coupled_rrt_config.max_control_duration = 10;
+        config.coupled_rrt_config.use_geometric = true;
 
         // Parse collision resolution configuration
         if (cfg["collision_resolution"]) {
