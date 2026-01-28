@@ -7,13 +7,20 @@
 
 #include "coupled_rrt.h"
 
-// OMPL headers
+// OMPL headers - Control (Kinodynamic)
 #include <ompl/control/SpaceInformation.h>
 #include <ompl/control/ControlSpace.h>
 #include <ompl/control/spaces/RealVectorControlSpace.h>
 #include <ompl/control/planners/rrt/RRT.h>
 #include <ompl/control/PathControl.h>
 #include <ompl/control/StatePropagator.h>
+
+// OMPL headers - Geometric
+#include <ompl/geometric/planners/rrt/RRT.h>
+#include <ompl/geometric/planners/rrt/RRTConnect.h>
+#include <ompl/geometric/PathGeometric.h>
+
+// OMPL headers - Base
 #include <ompl/base/StateSpace.h>
 #include <ompl/base/spaces/SE2StateSpace.h>
 #include <ompl/base/spaces/RealVectorStateSpace.h>
@@ -35,6 +42,7 @@
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
+namespace og = ompl::geometric;
 
 // ============================================================================
 // CompoundStatePropagator - propagates each robot independently
@@ -275,45 +283,62 @@ void CoupledRRTPlanner::setupRobots(const PlanningProblem& problem)
 
 void CoupledRRTPlanner::setupCompoundSpaces()
 {
-    // Create compound state space
+    // Create compound state space (used in both geometric and kinodynamic modes)
     compound_state_space_ = std::make_shared<ob::CompoundStateSpace>();
     for (auto& robot : robots_) {
         compound_state_space_->addSubspace(
             robot->getSpaceInformation()->getStateSpace(), 1.0);
     }
 
-    // Create compound control space
-    compound_control_space_ = std::make_shared<oc::CompoundControlSpace>(compound_state_space_);
-    for (auto& robot : robots_) {
-        compound_control_space_->addSubspace(
-            robot->getSpaceInformation()->getControlSpace());
+    if (config_.use_geometric) {
+        // ===== GEOMETRIC MODE =====
+        // Create geometric SpaceInformation (state-only, no control space)
+        compound_si_ = std::make_shared<ob::SpaceInformation>(compound_state_space_);
+
+        // Set state validity checker
+        auto validity_checker = std::make_shared<CompoundStateValidityChecker>(
+            compound_si_, col_mng_environment_, robots_);
+        compound_si_->setStateValidityChecker(validity_checker);
+
+        // Setup SpaceInformation
+        compound_si_->setup();
+
+    } else {
+        // ===== KINODYNAMIC MODE (default) =====
+        // Create compound control space
+        compound_control_space_ = std::make_shared<oc::CompoundControlSpace>(compound_state_space_);
+        for (auto& robot : robots_) {
+            compound_control_space_->addSubspace(
+                robot->getSpaceInformation()->getControlSpace());
+        }
+
+        // Create kinodynamic SpaceInformation (state + control)
+        auto compound_si_control = std::make_shared<oc::SpaceInformation>(
+            compound_state_space_, compound_control_space_);
+        compound_si_ = compound_si_control;  // Store as base type
+
+        // Set state propagator
+        auto propagator = std::make_shared<CompoundStatePropagator>(compound_si_control, robots_);
+        compound_si_control->setStatePropagator(propagator);
+
+        // Set state validity checker
+        auto validity_checker = std::make_shared<CompoundStateValidityChecker>(
+            compound_si_, col_mng_environment_, robots_);
+        compound_si_->setStateValidityChecker(validity_checker);
+
+        // Set propagation step size (use minimum dt from all robots)
+        double min_dt = robots_[0]->dt();
+        for (auto& robot : robots_) {
+            min_dt = std::min(static_cast<double>(min_dt), static_cast<double>(robot->dt()));
+        }
+        compound_si_control->setPropagationStepSize(min_dt);
+        compound_si_control->setMinMaxControlDuration(
+            config_.min_control_duration,
+            config_.max_control_duration);
+
+        // Setup SpaceInformation
+        compound_si_->setup();
     }
-
-    // Create compound SpaceInformation
-    compound_si_ = std::make_shared<oc::SpaceInformation>(
-        compound_state_space_, compound_control_space_);
-
-    // Set state propagator
-    auto propagator = std::make_shared<CompoundStatePropagator>(compound_si_, robots_);
-    compound_si_->setStatePropagator(propagator);
-
-    // Set state validity checker
-    auto validity_checker = std::make_shared<CompoundStateValidityChecker>(
-        compound_si_, col_mng_environment_, robots_);
-    compound_si_->setStateValidityChecker(validity_checker);
-
-    // Set propagation step size (use minimum dt from all robots)
-    double min_dt = robots_[0]->dt();
-    for (auto& robot : robots_) {
-        min_dt = std::min(static_cast<double>(min_dt), static_cast<double>(robot->dt()));
-    }
-    compound_si_->setPropagationStepSize(min_dt);
-    compound_si_->setMinMaxControlDuration(
-        config_.min_control_duration,
-        config_.max_control_duration);
-
-    // Setup SpaceInformation
-    compound_si_->setup();
 }
 
 void CoupledRRTPlanner::setupProblemDefinition()
@@ -365,8 +390,16 @@ PlanningResult CoupledRRTPlanner::plan(const PlanningProblem& problem)
         // Setup problem definition
         setupProblemDefinition();
 
-        // Create planner
-        auto planner = std::make_shared<oc::RRT>(compound_si_);
+        // Create planner based on mode
+        ob::PlannerPtr planner;
+        if (config_.use_geometric) {
+            // Geometric planner
+            planner = std::make_shared<og::RRTConnect>(compound_si_);
+        } else {
+            // Kinodynamic planner
+            auto compound_si_control = std::static_pointer_cast<oc::SpaceInformation>(compound_si_);
+            planner = std::make_shared<oc::RRT>(compound_si_control);
+        }
         planner->setProblemDefinition(pdef_);
         planner->setup();
 
@@ -380,13 +413,23 @@ PlanningResult CoupledRRTPlanner::plan(const PlanningProblem& problem)
         result.solved = (solved.asString() == "Exact solution");
 
         if (result.solved) {
-            // Get solution path
-            auto path = pdef_->getSolutionPath()->as<oc::PathControl>();
+            if (config_.use_geometric) {
+                // Get geometric solution path
+                auto path = pdef_->getSolutionPath()->as<og::PathGeometric>();
 
-            // Interpolate to uniform time steps
-            path->interpolate();
+                // Interpolate to uniform steps
+                path->interpolate();
 
-            result.path = std::make_shared<oc::PathControl>(*path);
+                result.geometric_path = std::make_shared<og::PathGeometric>(*path);
+            } else {
+                // Get kinodynamic solution path
+                auto path = pdef_->getSolutionPath()->as<oc::PathControl>();
+
+                // Interpolate to uniform time steps
+                path->interpolate();
+
+                result.path = std::make_shared<oc::PathControl>(*path);
+            }
         }
 
     } catch (const std::exception& e) {

@@ -4,6 +4,7 @@
 #include <ompl/control/PathControl.h>
 #include <ompl/control/SpaceInformation.h>
 #include <ompl/base/ProblemDefinition.h>
+#include <ompl/geometric/PathGeometric.h>
 #include <fcl/fcl.h>
 #include <memory>
 #include <vector>
@@ -11,6 +12,7 @@
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
+namespace og = ompl::geometric;
 
 // ============================================================================
 // Configuration Structures
@@ -22,6 +24,7 @@ struct CoupledRRTConfig {
     int min_control_duration = 1;
     int max_control_duration = 10;
     int seed = -1;  // Random seed (-1 for random)
+    bool use_geometric = false;  // Use geometric RRT (default: kinodynamic)
 };
 
 // ============================================================================
@@ -48,7 +51,8 @@ struct PlanningProblem {
 struct PlanningResult {
     bool solved;                               // Whether exact solution was found
     double planning_time;                      // Time spent planning (seconds)
-    std::shared_ptr<oc::PathControl> path;     // Solution path (compound path for all robots)
+    std::shared_ptr<oc::PathControl> path;     // Solution path (compound path for all robots) - kinodynamic
+    std::shared_ptr<og::PathGeometric> geometric_path;  // Solution path (compound path for all robots) - geometric
     std::vector<std::shared_ptr<oc::PathControl>> individual_paths;  // Individual paths per robot (for composite DB-RRT)
 };
 
@@ -94,8 +98,8 @@ private:
     std::vector<ob::State*> goal_states_;
 
     std::shared_ptr<ob::CompoundStateSpace> compound_state_space_;
-    std::shared_ptr<oc::CompoundControlSpace> compound_control_space_;
-    std::shared_ptr<oc::SpaceInformation> compound_si_;
+    std::shared_ptr<oc::CompoundControlSpace> compound_control_space_;  // Only used in kinodynamic mode
+    std::shared_ptr<ob::SpaceInformation> compound_si_;  // Base type works for both geometric and kinodynamic
     std::shared_ptr<ob::ProblemDefinition> pdef_;
 
     ob::RealVectorBounds position_bounds_;
