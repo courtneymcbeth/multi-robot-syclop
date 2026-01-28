@@ -944,7 +944,6 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
     const std::vector<double>& subproblem_env_min,
     const std::vector<double>& subproblem_env_max)
 {
-    std::cout << "Using composite DB-RRT planner on subproblem..." << std::endl;
     std::cout << "  Subproblem robots: ";
     for (size_t idx : robot_indices) {
         std::cout << idx << " ";
@@ -955,52 +954,88 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
     auto subproblem_obstacles = getObstaclesInRegion(subproblem_env_min, subproblem_env_max);
     std::cout << "  Subproblem obstacles: " << subproblem_obstacles.size() << std::endl;
 
-    // Build the CompositeDBRRT problem
-    CompositeDBRRTProblem problem;
-    problem.env_min = subproblem_env_min;
-    problem.env_max = subproblem_env_max;
-    problem.obstacles = subproblem_obstacles;
-    problem.dynobench_obstacles = dynobench_obstacles_;  // Use precomputed dynobench obstacles
+    if (config_.guided_planner_method == "db_rrt") {
+        // Use CompositeDBRRT planner for DB-RRT guided planning
+        std::cout << "Using composite DB-RRT planner on subproblem..." << std::endl;
 
-    // Add robot specifications for robots in subproblem
-    for (size_t i = 0; i < robot_indices.size(); ++i) {
-        size_t robot_idx = robot_indices[i];
+        CompositeDBRRTProblem problem;
+        problem.env_min = subproblem_env_min;
+        problem.env_max = subproblem_env_max;
+        problem.obstacles = subproblem_obstacles;
+        problem.dynobench_obstacles = dynobench_obstacles_;
 
-        CompositeRobotSpec robot_spec;
-        robot_spec.type = robot_types_[robot_idx];
-        robot_spec.start = subproblem_starts[i];
-        robot_spec.goal = subproblem_goals[i];
-        problem.robots.push_back(robot_spec);
-    }
-
-    // Create and run the CompositeDBRRT planner
-    CompositeDBRRTPlanner planner(config_.composite_dbrrt_config);
-    CompositeDBRRTResult composite_result = planner.plan(problem);
-
-    std::cout << "Composite DB-RRT planning completed in " << composite_result.planning_time << " seconds" << std::endl;
-    std::cout << "Solution found: " << (composite_result.solved ? "Yes" : "No") << std::endl;
-
-    // Convert to PlanningResult format
-    PlanningResult result;
-    result.solved = composite_result.solved;
-    result.planning_time = composite_result.planning_time;
-    result.path = nullptr;  // We store individual paths separately
-
-    if (composite_result.solved && composite_result.trajectories.size() == robot_indices.size()) {
-        // Store individual paths in the result's individual_paths vector
         for (size_t i = 0; i < robot_indices.size(); ++i) {
             size_t robot_idx = robot_indices[i];
-            auto path = convertDynobenchTrajectory(composite_result.trajectories[i], robots_[robot_idx]);
-            result.individual_paths.push_back(path);
-
-            std::cout << "  Robot " << robot_idx << ": trajectory with "
-                      << composite_result.trajectories[i].states.size() << " states" << std::endl;
+            CompositeRobotSpec robot_spec;
+            robot_spec.type = robot_types_[robot_idx];
+            robot_spec.start = subproblem_starts[i];
+            robot_spec.goal = subproblem_goals[i];
+            problem.robots.push_back(robot_spec);
         }
-    } else if (!composite_result.solved) {
-        std::cout << "No solution found by composite DB-RRT planner" << std::endl;
-    }
 
-    return result;
+        CompositeDBRRTPlanner planner(config_.composite_dbrrt_config);
+        CompositeDBRRTResult composite_result = planner.plan(problem);
+
+        std::cout << "Composite DB-RRT planning completed in " << composite_result.planning_time << " seconds" << std::endl;
+        std::cout << "Solution found: " << (composite_result.solved ? "Yes" : "No") << std::endl;
+
+        PlanningResult result;
+        result.solved = composite_result.solved;
+        result.planning_time = composite_result.planning_time;
+        result.path = nullptr;
+
+        if (composite_result.solved && composite_result.trajectories.size() == robot_indices.size()) {
+            for (size_t i = 0; i < robot_indices.size(); ++i) {
+                size_t robot_idx = robot_indices[i];
+                auto path = convertDynobenchTrajectory(composite_result.trajectories[i], robots_[robot_idx]);
+                result.individual_paths.push_back(path);
+
+                std::cout << "  Robot " << robot_idx << ": trajectory with "
+                          << composite_result.trajectories[i].states.size() << " states" << std::endl;
+            }
+        } else if (!composite_result.solved) {
+            std::cout << "No solution found by composite DB-RRT planner" << std::endl;
+        }
+
+        return result;
+    } else {
+        // Use CoupledRRT planner for non-DB-RRT guided planning (e.g., syclop_rrt)
+        std::cout << "Using coupled RRT planner on subproblem..." << std::endl;
+
+        PlanningProblem problem;
+        problem.env_min = subproblem_env_min;
+        problem.env_max = subproblem_env_max;
+        problem.obstacles = subproblem_obstacles;
+
+        for (size_t i = 0; i < robot_indices.size(); ++i) {
+            size_t robot_idx = robot_indices[i];
+            RobotSpec robot_spec;
+            robot_spec.type = robot_types_[robot_idx];
+            robot_spec.start = subproblem_starts[i];
+            robot_spec.goal = subproblem_goals[i];
+            problem.robots.push_back(robot_spec);
+        }
+
+        CoupledRRTPlanner planner(config_.coupled_rrt_config);
+        PlanningResult result = planner.plan(problem);
+
+        std::cout << "Coupled RRT planning completed in " << result.planning_time << " seconds" << std::endl;
+        std::cout << "Solution found: " << (result.solved ? "Yes" : "No") << std::endl;
+
+        if (result.solved) {
+            for (size_t i = 0; i < robot_indices.size(); ++i) {
+                size_t robot_idx = robot_indices[i];
+                if (i < result.individual_paths.size() && result.individual_paths[i]) {
+                    std::cout << "  Robot " << robot_idx << ": trajectory with "
+                              << result.individual_paths[i]->getStateCount() << " states" << std::endl;
+                }
+            }
+        } else {
+            std::cout << "No solution found by coupled RRT planner" << std::endl;
+        }
+
+        return result;
+    }
 }
 
 bool MRSyCLoPPlanner::resolveCollisions()
@@ -1254,10 +1289,28 @@ bool MRSyCLoPPlanner::resolveCollisionWithStrategies(const SegmentCollision& col
             return false;
         }
 
-        std::cout << "  Hierarchical expansion+refinement exhausted, escalating to composite..." << std::endl;
+        std::cout << "  Hierarchical expansion+refinement exhausted, escalating to local composite..." << std::endl;
     }
 
-    // Strategy 2: Full-Problem Composite Planner (ALL robots, original starts/goals)
+    // Strategy 2: Local Composite Planner (plans colliding robots jointly in local bounds)
+    if (collision.type == SegmentCollision::ROBOT_ROBOT) {
+        std::cout << "  Trying local composite planner (joint planning of colliding robots)..." << std::endl;
+
+        if (resolveWithLocalCompositePlanner(collision, log_entry)) {
+            std::cout << "  Local composite planner resolved the collision" << std::endl;
+            return true;
+        }
+
+        // Check if we timed out during local composite planning
+        if (isTimeoutExceeded()) {
+            std::cerr << "  Timeout during local composite planner" << std::endl;
+            return false;
+        }
+
+        std::cout << "  Local composite planner failed, escalating to full-problem composite..." << std::endl;
+    }
+
+    // Strategy 3: Full-Problem Composite Planner (ALL robots, original starts/goals)
     if (config.max_composite_attempts > 0) {
         std::cout << "  Trying full-problem composite planner (max "
                   << config.max_composite_attempts << " attempts)..." << std::endl;
@@ -2347,6 +2400,118 @@ oc::DecompositionPtr MRSyCLoPPlanner::createMultiCellDecomposition(
     saveDecompositionToFile(multi_cell_decomp, "multi_cell");
 
     return multi_cell_decomp;
+}
+
+// ============================================================================
+// Local Composite Planner (plans colliding robots jointly in local bounds)
+// ============================================================================
+
+bool MRSyCLoPPlanner::resolveWithLocalCompositePlanner(
+    const SegmentCollision& collision,
+    CollisionResolutionEntry& log_entry)
+{
+    size_t robot_1 = collision.robot_index_1;
+    size_t robot_2 = collision.robot_index_2;
+
+    std::cout << "    Local composite planner: jointly planning robots "
+              << robot_1 << " and " << robot_2 << std::endl;
+
+    // Check for timeout
+    if (isTimeoutExceeded()) {
+        std::cerr << "    Timeout before local composite planner" << std::endl;
+        return false;
+    }
+
+    StrategyAttempt attempt;
+    attempt.strategy = "local_composite";
+
+    // Locate collision region and get expanded region for the subproblem
+    ob::State* temp_state = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
+    const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
+    if (!seg_1) {
+        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(temp_state);
+        std::cout << "    Cannot find segment at collision timestep" << std::endl;
+        attempt.planning_succeeded = false;
+        log_entry.attempts.push_back(attempt);
+        return false;
+    }
+    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, temp_state);
+    int collision_region = decomp_->locateRegion(temp_state);
+    robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(temp_state);
+
+    // Use 2 layers of expansion around the collision region for local bounds
+    std::vector<int> expanded_regions = getExpandedRegion(collision_region, 2);
+
+    // Extract replanning bounds (entry/exit states) for both robots
+    PathUpdateInfo update_info_1, update_info_2;
+    if (!extractReplanningBoundsForExpandedRegion(
+            collision, expanded_regions, update_info_1, update_info_2)) {
+        std::cout << "    Failed to extract replanning bounds" << std::endl;
+        attempt.planning_succeeded = false;
+        log_entry.attempts.push_back(attempt);
+        return false;
+    }
+
+    // Convert OMPL entry/exit states to std::vector<double>
+    auto si_1 = robots_[robot_1]->getSpaceInformation();
+    auto si_2 = robots_[robot_2]->getSpaceInformation();
+
+    std::vector<double> start_1, goal_1, start_2, goal_2;
+    si_1->getStateSpace()->copyToReals(start_1, update_info_1.entry_state);
+    si_1->getStateSpace()->copyToReals(goal_1, update_info_1.exit_state);
+    si_2->getStateSpace()->copyToReals(start_2, update_info_2.entry_state);
+    si_2->getStateSpace()->copyToReals(goal_2, update_info_2.exit_state);
+
+    // Compute local bounds from expanded region
+    std::vector<double> local_env_min, local_env_max;
+    computeExpandedBounds(expanded_regions, local_env_min, local_env_max);
+
+    // Call useCompositePlanner to jointly plan both robots
+    std::vector<size_t> robot_indices = {robot_1, robot_2};
+    std::vector<std::vector<double>> subproblem_starts = {start_1, start_2};
+    std::vector<std::vector<double>> subproblem_goals = {goal_1, goal_2};
+
+    PlanningResult result = useCompositePlanner(
+        robot_indices, subproblem_starts, subproblem_goals,
+        local_env_min, local_env_max);
+
+    if (result.solved && result.individual_paths.size() == 2) {
+        attempt.planning_succeeded = true;
+        std::cout << "    Local composite planning succeeded" << std::endl;
+
+        // Convert PlanningResult individual paths to GuidedPlanningResult format
+        std::vector<mr_syclop::GuidedPlanningResult> local_results;
+        for (size_t i = 0; i < robot_indices.size(); ++i) {
+            mr_syclop::GuidedPlanningResult guided_result;
+            guided_result.success = true;
+            guided_result.planning_time = result.planning_time;
+            guided_result.robot_index = robot_indices[i];
+            guided_result.path = result.individual_paths[i];
+            local_results.push_back(guided_result);
+        }
+
+        // Integrate refined paths and re-check collisions
+        integrateRefinedPaths(robot_indices, local_results, update_info_1, update_info_2);
+        recheckCollisionsFromTimestep(getRecheckStartTimestep(collision));
+
+        // Check if the collision is resolved
+        if (!collisionPersistsForRobots(robot_1, robot_2, collision.timestep)) {
+            std::cout << "    Local composite planner resolved the collision" << std::endl;
+            attempt.collision_resolved = true;
+            log_entry.attempts.push_back(attempt);
+            freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+            return true;
+        }
+
+        std::cout << "    Local composite planner: collision persists after replanning" << std::endl;
+    } else {
+        attempt.planning_succeeded = false;
+        std::cout << "    Local composite planner failed to find solution" << std::endl;
+    }
+
+    log_entry.attempts.push_back(attempt);
+    freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+    return false;
 }
 
 // ============================================================================

@@ -11,6 +11,7 @@ import bisect
 import yaml
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.collections import LineCollection
 from matplotlib.widgets import Slider, Button
 import numpy as np
 import argparse
@@ -479,6 +480,83 @@ def trail_points(path, waypoint_times, t):
                 ys.append(interp_y)
     return xs, ys
 
+def load_solution_and_env(solution_file, env_file=None, config_file=None,
+                         models_path=None, planner_config_file=None):
+    """Load solution, environment, and planner config from files.
+
+    Returns: (solution, paths, env, planner_config) or None on failure.
+    """
+    solution = load_yaml(solution_file)
+
+    if not solution or 'result' not in solution:
+        print("Warning: No solution found in file")
+        return None
+
+    fmt = detect_format(solution)
+    print(f"Detected solution format: {fmt}")
+
+    planner_config = None
+    if planner_config_file:
+        planner_config = load_yaml(planner_config_file, exit_on_error=False)
+        if planner_config:
+            print(f"Loaded planner config: {planner_config_file}")
+
+    paths = extract_paths_from_solution(solution)
+
+    if not paths:
+        print("Warning: No valid paths found in solution")
+        return None
+
+    env = None
+
+    if config_file:
+        config = load_yaml(config_file)
+        config_fmt = detect_config_format(config)
+        print(f"Loaded config file (format: {config_fmt}): {config_file}")
+
+        if config_fmt == 's2m2':
+            env = convert_s2m2_to_mrsyclop(config, models_path)
+        elif config_fmt == 'mr_syclop':
+            env = config
+            for robot in env.get('robots', []):
+                if 'radius' not in robot:
+                    robot_type = robot.get('type', '')
+                    model = load_robot_model(robot_type, models_path)
+                    if model is not None:
+                        if model['radius'] is not None:
+                            robot['radius'] = model['radius']
+                        elif model['shape'] == 'sphere' and model['size']:
+                            robot['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
+                        elif model['shape'] == 'box' and model['size']:
+                            w, h = model['size'][0], model['size'][1]
+                            robot['radius'] = 0.5 * np.hypot(w, h)
+                            robot['box_size'] = model['size']
+                        robot['shape'] = model['shape']
+
+    if env is None and env_file:
+        env = load_yaml(env_file)
+        for robot in env.get('robots', []):
+            if 'radius' not in robot:
+                robot_type = robot.get('type', '')
+                model = load_robot_model(robot_type, models_path)
+                if model is not None:
+                    if model['radius'] is not None:
+                        robot['radius'] = model['radius']
+                    elif model['shape'] == 'sphere' and model['size']:
+                        robot['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
+                    elif model['shape'] == 'box' and model['size']:
+                        w, h = model['size'][0], model['size'][1]
+                        robot['radius'] = 0.5 * np.hypot(w, h)
+                        robot['box_size'] = model['size']
+                    robot['shape'] = model['shape']
+
+    if env is None:
+        print("No environment/config file provided, inferring from solution...")
+        env = create_synthetic_env(solution, paths, models_path)
+
+    return solution, paths, env, planner_config
+
+
 def interactive_animation(env_file, solution_file, initial_speed=1.0, config_file=None,
                           models_path=None, show_high_level=True, show_grid=True,
                           planner_config_file=None):
@@ -495,83 +573,11 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
         planner_config_file: Path to planner config file (for decomposition.resolution)
     """
 
-    # Load solution
-    solution = load_yaml(solution_file)
-
-    if not solution or 'result' not in solution:
-        print("Warning: No solution found in file")
+    loaded = load_solution_and_env(solution_file, env_file, config_file,
+                                   models_path, planner_config_file)
+    if loaded is None:
         return
-
-    # Detect format
-    fmt = detect_format(solution)
-    print(f"Detected solution format: {fmt}")
-
-    # Load planner config if provided (for decomposition.resolution)
-    planner_config = None
-    if planner_config_file:
-        planner_config = load_yaml(planner_config_file, exit_on_error=False)
-        if planner_config:
-            print(f"Loaded planner config: {planner_config_file}")
-
-    # Extract paths using unified function
-    paths = extract_paths_from_solution(solution)
-
-    if not paths:
-        print("Warning: No valid paths found in solution")
-        return
-
-    # Load environment from config file, env file, or create synthetic
-    env = None
-
-    # Priority 1: Use config file if provided
-    if config_file:
-        config = load_yaml(config_file)
-        config_fmt = detect_config_format(config)
-        print(f"Loaded config file (format: {config_fmt}): {config_file}")
-
-        if config_fmt == 's2m2':
-            env = convert_s2m2_to_mrsyclop(config, models_path)
-        elif config_fmt == 'mr_syclop':
-            env = config
-            # Augment with model data if robots don't have explicit radius
-            for robot in env.get('robots', []):
-                if 'radius' not in robot:
-                    robot_type = robot.get('type', '')
-                    model = load_robot_model(robot_type, models_path)
-                    if model is not None:
-                        if model['radius'] is not None:
-                            robot['radius'] = model['radius']
-                        elif model['shape'] == 'sphere' and model['size']:
-                            robot['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
-                        elif model['shape'] == 'box' and model['size']:
-                            w, h = model['size'][0], model['size'][1]
-                            robot['radius'] = 0.5 * np.hypot(w, h)
-                            robot['box_size'] = model['size']
-                        robot['shape'] = model['shape']
-
-    # Priority 2: Use env file if provided
-    if env is None and env_file:
-        env = load_yaml(env_file)
-        # Augment with model data
-        for robot in env.get('robots', []):
-            if 'radius' not in robot:
-                robot_type = robot.get('type', '')
-                model = load_robot_model(robot_type, models_path)
-                if model is not None:
-                    if model['radius'] is not None:
-                        robot['radius'] = model['radius']
-                    elif model['shape'] == 'sphere' and model['size']:
-                        robot['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
-                    elif model['shape'] == 'box' and model['size']:
-                        w, h = model['size'][0], model['size'][1]
-                        robot['radius'] = 0.5 * np.hypot(w, h)
-                        robot['box_size'] = model['size']
-                    robot['shape'] = model['shape']
-
-    # Priority 3: Create synthetic environment from solution data
-    if env is None:
-        print("No environment/config file provided, inferring from solution...")
-        env = create_synthetic_env(solution, paths, models_path)
+    solution, paths, env, planner_config = loaded
 
     # Extract environment bounds
     env_min = env['environment']['min']
@@ -865,6 +871,82 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
 
     plt.show()
 
+def static_gradient_plot(env_file, solution_file, config_file=None,
+                         models_path=None, planner_config_file=None,
+                         output_file=None):
+    """Static plot of robot paths with color gradients showing start-to-finish progression."""
+
+    loaded = load_solution_and_env(solution_file, env_file, config_file,
+                                   models_path, planner_config_file)
+    if loaded is None:
+        return
+    solution, paths, env, planner_config = loaded
+
+    env_min = env['environment']['min']
+    env_max = env['environment']['max']
+
+    fig, ax = plt.subplots(figsize=(12, 10))
+    ax.set_xlim(env_min[0], env_max[0])
+    ax.set_ylim(env_min[1], env_max[1])
+    ax.set_aspect('equal')
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_title('Multi-Robot Paths (gradient: light=start, dark=finish)')
+
+    draw_obstacles(ax, env)
+
+    base_colors = plt.cm.tab10(np.linspace(0, 1, max(len(paths), 1)))
+
+    for robot_idx, path in enumerate(paths):
+        if len(path) < 2:
+            continue
+
+        points = np.array([[s[0], s[1]] for s in path])
+        segments = np.stack([points[:-1], points[1:]], axis=1)
+
+        n_seg = len(segments)
+        base_rgba = np.array(base_colors[robot_idx])
+
+        # Build per-segment colors: alpha ramps from 0.25 to 1.0
+        colors = np.tile(base_rgba, (n_seg, 1))
+        colors[:, 3] = np.linspace(0.25, 1.0, n_seg)
+
+        lc = LineCollection(segments, colors=colors, linewidths=2.5, zorder=2)
+        ax.add_collection(lc)
+
+        robot_name = env['robots'][robot_idx].get('name', f'Robot {robot_idx}') if robot_idx < len(env['robots']) else f'Robot {robot_idx}'
+
+        # Start marker
+        ax.plot(points[0, 0], points[0, 1], 'o', color=base_rgba,
+                markersize=10, markeredgecolor='black', markeredgewidth=2,
+                zorder=3, label=robot_name)
+        # Goal marker
+        ax.plot(points[-1, 0], points[-1, 1], '*', color=base_rgba,
+                markersize=14, markeredgecolor='black', markeredgewidth=1.5,
+                zorder=3)
+
+    # Add a progress colorbar
+    sm = plt.cm.ScalarMappable(
+        cmap=plt.cm.Greys,
+        norm=plt.Normalize(vmin=0, vmax=100),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.04)
+    cbar.set_label('Progress %  (light = start, dark = finish)')
+
+    ax.legend(loc='upper right')
+    plt.tight_layout()
+
+    if output_file is None:
+        # Default: save next to the solution file
+        base = os.path.splitext(solution_file)[0]
+        output_file = base + '_paths.png'
+
+    fig.savefig(output_file, dpi=150)
+    print(f"Saved static gradient plot to {output_file}")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Interactive visualization for Multi-Robot SyCLoP solutions',
@@ -906,6 +988,9 @@ Examples:
 
   # With planner config for decomposition grid (when not in solution)
   %(prog)s --solution out.yaml --planner-config planner_cfgs/config.yaml
+
+  # Static gradient plot (color shows start-to-finish progression)
+  %(prog)s --solution out.yaml --static
         '''
     )
     parser.add_argument('--env', required=False, default=None,
@@ -927,23 +1012,37 @@ Examples:
                         help='Show decomposition grid lines (default: True)')
     parser.add_argument('--no-grid', action='store_true',
                         help='Hide decomposition grid lines')
+    parser.add_argument('--static', action='store_true',
+                        help='Show static gradient plot instead of interactive animation')
+    parser.add_argument('--output', '-o', required=False, default=None,
+                        help='Output image file for --static mode (default: <solution>_paths.png)')
 
     args = parser.parse_args()
 
-    # Handle negation flags
-    show_high_level = args.show_high_level and not args.no_high_level
-    show_grid = args.show_grid and not args.no_grid
+    if args.static:
+        static_gradient_plot(
+            env_file=args.env,
+            solution_file=args.solution,
+            config_file=args.config,
+            models_path=args.models_path,
+            planner_config_file=args.planner_config,
+            output_file=args.output,
+        )
+    else:
+        # Handle negation flags
+        show_high_level = args.show_high_level and not args.no_high_level
+        show_grid = args.show_grid and not args.no_grid
 
-    interactive_animation(
-        env_file=args.env,
-        solution_file=args.solution,
-        initial_speed=args.speed,
-        config_file=args.config,
-        models_path=args.models_path,
-        show_high_level=show_high_level,
-        show_grid=show_grid,
-        planner_config_file=args.planner_config,
-    )
+        interactive_animation(
+            env_file=args.env,
+            solution_file=args.solution,
+            initial_speed=args.speed,
+            config_file=args.config,
+            models_path=args.models_path,
+            show_high_level=show_high_level,
+            show_grid=show_grid,
+            planner_config_file=args.planner_config,
+        )
 
 if __name__ == '__main__':
     main()

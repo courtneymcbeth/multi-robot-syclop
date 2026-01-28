@@ -270,3 +270,42 @@ target_link_libraries(composite_dbrrt
 target_include_directories(composite_dbrrt PUBLIC
   ${YAML_INCLUDE_DIRS}
 )
+
+## k_arc - Kinodynamic Adaptive Robot Coordination
+
+# Create library for K-ARC implementation
+add_library(k_arc_lib
+  src/k_arc.cpp
+)
+target_link_libraries(k_arc_lib
+  PUBLIC motion_planning_common
+  PUBLIC composite_dbrrt_lib
+  PUBLIC guided_planner
+  PUBLIC ompl
+  PUBLIC ${FCL_LIBRARIES}
+  PUBLIC idbastar::dbrrt
+  PUBLIC idbastar::optimization
+  PUBLIC dynobench::dynobench
+)
+target_include_directories(k_arc_lib PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/db-CBS/src
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/dynobench/include
+  ${CMAKE_SOURCE_DIR}/db-CBS/dynoplan/deps/nigh/src
+  ${FCL_INCLUDE_DIRS}
+)
+
+# Executable that uses the library
+add_executable(k_arc
+  src/k_arc_main.cpp
+  src/decomposition.cpp
+)
+target_link_libraries(k_arc
+  k_arc_lib
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+)
+target_include_directories(k_arc PUBLIC
+  ${YAML_INCLUDE_DIRS}
+)
