@@ -113,6 +113,9 @@ CoupledRRTConfig loadConfigFromYAML(const std::string& configFile)
         if (cfg["seed"]) {
             config.seed = cfg["seed"].as<int>();
         }
+        if (cfg["use_geometric"]) {
+            config.use_geometric = cfg["use_geometric"].as<bool>();
+        }
     } catch (const YAML::Exception& e) {
         std::cerr << "ERROR loading config file: " << e.what() << std::endl;
         throw;
@@ -129,11 +132,13 @@ void writeResultToYAML(const std::string& outputFile,
     output["solved"] = result.solved;
     output["planning_time"] = result.planning_time;
 
+    const int num_robots = problem.robots.size();
+
+    // Handle kinodynamic path
     if (result.solved && result.path) {
-        std::cout << "Exact solution found! Extracting path..." << std::endl;
+        std::cout << "Exact solution found! Extracting kinodynamic path..." << std::endl;
 
         auto path = result.path;
-        const int num_robots = problem.robots.size();
 
         std::cout << "Path has " << path->getStateCount() << " states and "
                   << path->getControlCount() << " controls" << std::endl;
@@ -185,6 +190,52 @@ void writeResultToYAML(const std::string& outputFile,
                 actions_node.push_back(action_node);
             }
             robot_data["actions"] = actions_node;
+
+            result_node.push_back(robot_data);
+        }
+        output["result"] = result_node;
+
+        std::cout << "Solution extracted successfully" << std::endl;
+    }
+    // Handle geometric path
+    else if (result.solved && result.geometric_path) {
+        std::cout << "Exact solution found! Extracting geometric path..." << std::endl;
+
+        auto path = result.geometric_path;
+
+        std::cout << "Path has " << path->getStateCount() << " states" << std::endl;
+
+        // Get the state space information
+        auto si = path->getSpaceInformation();
+        auto compound_state_space = si->getStateSpace()->as<ob::CompoundStateSpace>();
+
+        // Extract states for each robot
+        YAML::Node result_node;
+        for (int r = 0; r < num_robots; ++r) {
+            YAML::Node robot_data;
+
+            // Extract states
+            YAML::Node states_node;
+            for (size_t i = 0; i < path->getStateCount(); ++i) {
+                auto compound = path->getState(i)->as<ob::CompoundState>();
+                auto robot_state = compound->components[r];
+
+                // Get state space for this robot to extract values
+                auto robot_space = compound_state_space->getSubspace(r);
+
+                std::vector<double> state_vals(robot_space->getDimension());
+                robot_space->copyToReals(state_vals, robot_state);
+
+                YAML::Node state_node;
+                for (double val : state_vals) {
+                    state_node.push_back(val);
+                }
+                states_node.push_back(state_node);
+            }
+            robot_data["states"] = states_node;
+
+            // No actions/controls in geometric mode
+            robot_data["actions"] = YAML::Node(YAML::NodeType::Sequence);
 
             result_node.push_back(robot_data);
         }

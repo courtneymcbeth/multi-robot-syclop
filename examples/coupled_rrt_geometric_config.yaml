@@ -1,0 +1,16 @@
+# Configuration for Coupled RRT planner - Geometric Mode
+# This mode uses geometric RRT planning (no dynamics constraints)
+
+# Time limit for planning (seconds)
+time_limit: 60.0
+
+# Goal threshold distance
+goal_threshold: 0.5
+
+# Random seed (-1 for random)
+seed: 42
+
+# Use geometric planning (no dynamics, faster but paths may not be dynamically feasible)
+use_geometric: true
+
+# Note: min_control_duration and max_control_duration are ignored in geometric mode
