@@ -2856,17 +2856,15 @@ int main(int argc, char* argv[]) {
     po::options_description desc("Allowed options");
     std::string inputFile;
     std::string outputFile;
-    std::string jointFile;
-    std::string optimizationFile;
     std::string cfgFile;
+    double time_limit;
 
     desc.add_options()
       ("help", "produce help message")
       ("input,i", po::value<std::string>(&inputFile)->required(), "input file (yaml)")
       ("output,o", po::value<std::string>(&outputFile)->required(), "output file (yaml)")
-      ("joint,jnt", po::value<std::string>(&jointFile)->required(), "joint output file (yaml)")
-      ("optimization,opt", po::value<std::string>(&optimizationFile)->required(), "optimization file (yaml)")
-      ("cfg,c", po::value<std::string>(&cfgFile)->required(), "configuration file (yaml)");
+      ("cfg,c", po::value<std::string>(&cfgFile)->required(), "configuration file (yaml)")
+      ("timelimit,t", po::value<double>(&time_limit)->default_value(60.0), "time limit in seconds");
 
     try {
       po::variables_map vm;
@@ -2898,6 +2896,9 @@ int main(int argc, char* argv[]) {
         if (cfg["max_total_time"]) {
             config.max_total_time = cfg["max_total_time"].as<double>();
         }
+
+        // Override with command-line time limit if provided
+        config.max_total_time = time_limit;
 
         // Load decomposition resolution
         if (cfg["decomposition"] && cfg["decomposition"]["resolution"]) {
@@ -2956,6 +2957,9 @@ int main(int argc, char* argv[]) {
             }
             if (gp["debug"]) {
                 config.guided_planner_config.debug = gp["debug"].as<bool>();
+            }
+            if (gp["goal_threshold"]) {
+                config.guided_planner_config.goal_threshold = gp["goal_threshold"].as<double>();
             }
             if (gp["num_free_volume_samples"]) {
                 config.guided_planner_config.num_free_volume_samples = gp["num_free_volume_samples"].as<int>();

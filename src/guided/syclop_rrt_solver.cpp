@@ -60,8 +60,15 @@ GuidedPlanningResult SyclopRRTSolver::solve(
         planner->setProblemDefinition(pdef);
         planner->setup();
 
-        ob::PlannerStatus status = planner->solve(
-            ob::timedPlannerTerminationCondition(config_.time_per_robot));
+        // Use exactSolnPlannerTerminationCondition to stop after finding first solution
+        // Falls back to time limit if no solution found
+        ob::PlannerTerminationCondition exactSolnPtc =
+            ob::exactSolnPlannerTerminationCondition(pdef);
+        ob::PlannerTerminationCondition timedPtc =
+            ob::timedPlannerTerminationCondition(config_.time_per_robot);
+        ob::PlannerTerminationCondition ptc(
+            [&exactSolnPtc, &timedPtc] { return exactSolnPtc() || timedPtc(); });
+        ob::PlannerStatus status = planner->solve(ptc);
 
         // 6. Extract solution if found
         if (status == ob::PlannerStatus::EXACT_SOLUTION ||
@@ -132,7 +139,7 @@ void SyclopRRTSolver::setupOMPLComponents(
 
     // Create problem definition
     pdef_out = std::make_shared<ob::ProblemDefinition>(si_out);
-    pdef_out->setStartAndGoalStates(start_state, goal_state);
+    pdef_out->setStartAndGoalStates(start_state, goal_state, config_.goal_threshold);
 }
 
 oc::Syclop::LeadComputeFn SyclopRRTSolver::createLeadFunction(

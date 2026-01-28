@@ -1,0 +1,7 @@
+seed: 4
+decomposition_region_length: 5
+segment_timesteps: 30
+mapf: {method: cbs, region_capacity: 2, max_obstacle_volume_percent: 0.5}
+guided_planner: {time_per_robot: 10.0, goal_threshold: 0.5, num_free_volume_samples: 100000,
+  num_region_expansions: 100, num_tree_expansions: 1, prob_abandon_lead_early: 0.25,
+  prob_shortest_path: 0.95, use_regional_nn: true, debug: false}

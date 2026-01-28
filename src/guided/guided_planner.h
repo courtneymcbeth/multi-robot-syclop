@@ -66,6 +66,9 @@ struct GuidedPlannerConfig {
     // Time budget per robot (seconds)
     double time_per_robot = 10.0;
 
+    // Goal tolerance
+    double goal_threshold = 0.5;
+
     // SyclopRRT-specific parameters
     int num_free_volume_samples = 100000;
     int num_region_expansions = 100;
