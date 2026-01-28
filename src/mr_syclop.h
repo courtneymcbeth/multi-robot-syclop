@@ -363,6 +363,10 @@ private:
     int calculateMaxExpansionLayers() const;
     bool expansionCoversFullDecomposition(int expansion_layers) const;
 
+    // Local composite planner (plans colliding robots jointly in local bounds)
+    bool resolveWithLocalCompositePlanner(const SegmentCollision& collision,
+                                          CollisionResolutionEntry& log_entry);
+
     // Full-problem composite planner fallback
     bool resolveWithFullProblemCompositePlanner(int max_attempts,
                                                 CollisionResolutionEntry& log_entry);

@@ -148,9 +148,39 @@ oc::Syclop::LeadComputeFn SyclopRRTSolver::createLeadFunction(
     // Capture region_path by value in the lambda
     return [region_path](int startRegion, int goalRegion,
                          std::vector<int>& lead) {
-        // The MAPF algorithm has already computed the high-level path
-        // Simply return it as the lead
-        lead = region_path;
+        // The MAPF algorithm has already computed the high-level path.
+        // However, OMPL's Syclop planners expect the lead to be consistent with
+        // the (startRegion, goalRegion) passed in at runtime.
+        //
+        // In practice, small numerical/boundary effects can make locateRegion()
+        // differ from what MAPF produced (especially for local decompositions),
+        // and returning an inconsistent lead can cause poor guidance or failure.
+        lead.clear();
+
+        if (region_path.empty()) {
+            lead.push_back(startRegion);
+            if (goalRegion != startRegion) {
+                lead.push_back(goalRegion);
+            }
+            return;
+        }
+
+        // Ensure lead starts at startRegion
+        if (region_path.front() != startRegion) {
+            lead.push_back(startRegion);
+        }
+
+        // Append MAPF path, skipping immediate duplicates
+        for (int r : region_path) {
+            if (lead.empty() || lead.back() != r) {
+                lead.push_back(r);
+            }
+        }
+
+        // Ensure lead ends at goalRegion
+        if (!lead.empty() && lead.back() != goalRegion) {
+            lead.push_back(goalRegion);
+        }
 
 #ifdef DBG_PRINTS
         // Validate that the path starts and ends correctly
