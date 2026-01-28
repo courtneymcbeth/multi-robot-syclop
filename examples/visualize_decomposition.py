@@ -66,6 +66,67 @@ def draw_obstacles(ax, env):
 # Hierarchical Decomposition Visualization
 # ============================================================================
 
+def get_cell_center(region_id, grid_length, bounds_min, bounds_max):
+    """Get the (x, y) center of a base grid cell given its region ID."""
+    col = region_id % grid_length
+    row = region_id // grid_length
+    cell_w = (bounds_max[0] - bounds_min[0]) / grid_length
+    cell_h = (bounds_max[1] - bounds_min[1]) / grid_length
+    return (bounds_min[0] + (col + 0.5) * cell_w,
+            bounds_min[1] + (row + 0.5) * cell_h)
+
+
+def draw_leads(ax, leads, grid_length, bounds_min, bounds_max):
+    """
+    Draw high-level paths (leads) across the decomposition grid.
+
+    Args:
+        ax: Matplotlib axes
+        leads: List of leads (one per robot), each a list of region IDs
+        grid_length: Number of cells per dimension
+        bounds_min: Environment min bounds
+        bounds_max: Environment max bounds
+    """
+    if not leads:
+        return
+
+    cmap = plt.cm.tab10
+    num_robots = len(leads)
+
+    for robot_idx, lead in enumerate(leads):
+        if not lead:
+            continue
+
+        color = cmap(robot_idx / max(num_robots, 1))
+
+        # Compute cell centers along the path
+        centers = [get_cell_center(rid, grid_length, bounds_min, bounds_max)
+                    for rid in lead]
+
+        # Small offset per robot so overlapping paths are visible
+        offset = (robot_idx - num_robots / 2.0) * 0.3
+
+        xs = [c[0] + offset for c in centers]
+        ys = [c[1] + offset for c in centers]
+
+        # Draw arrows between consecutive cells
+        for i in range(len(xs) - 1):
+            ax.annotate('', xy=(xs[i + 1], ys[i + 1]),
+                        xytext=(xs[i], ys[i]),
+                        arrowprops=dict(arrowstyle='->', color=color,
+                                        lw=2.0, mutation_scale=15),
+                        zorder=10)
+
+        # Mark start and end
+        ax.plot(xs[0], ys[0], 'o', color=color, markersize=10, zorder=11,
+                label=f'Robot {robot_idx}')
+        ax.plot(xs[-1], ys[-1], 's', color=color, markersize=10, zorder=11)
+        ax.text(xs[0], ys[0], f' S{robot_idx}', color=color, fontsize=9,
+                fontweight='bold', zorder=12, va='bottom')
+        ax.text(xs[-1], ys[-1], f' G{robot_idx}', color=color, fontsize=9,
+                fontweight='bold', zorder=12, va='bottom')
+
+
 def get_color_for_depth(depth, max_depth=5):
     """Get a color based on refinement depth"""
     # Use a colormap that goes from blue (unrefined) to red (most refined)
@@ -149,18 +210,36 @@ def plot_hierarchy_cell(ax, cell, bounds_min, bounds_max, grid_length, depth=0,
         parent_x = bounds_min[0] + col * base_cell_width
         parent_y = bounds_min[1] + row * base_cell_height
 
-        # Draw parent cell outline (dashed, to show it was refined)
+        # Draw parent cell with highlight fill and dashed outline
         if show_bounds and depth == 0:
+            # Light yellow fill to highlight refined region
+            rect_fill = patches.Rectangle(
+                (parent_x, parent_y), base_cell_width, base_cell_height,
+                facecolor='#FFFFCC',
+                edgecolor='none',
+                alpha=0.4,
+                zorder=1
+            )
+            ax.add_patch(rect_fill)
+            # Dashed outline
             rect = patches.Rectangle(
                 (parent_x, parent_y), base_cell_width, base_cell_height,
                 facecolor='none',
-                edgecolor='gray',
-                linewidth=0.5,
+                edgecolor='darkorange',
+                linewidth=2.0,
                 linestyle='--',
-                alpha=0.5,
-                zorder=1
+                alpha=0.8,
+                zorder=4
             )
             ax.add_patch(rect)
+            # Label the parent ID above the cell
+            if show_ids:
+                ax.text(parent_x + base_cell_width / 2,
+                        parent_y + base_cell_height + 0.15,
+                        f'Cell {parent_id} (refined)',
+                        ha='center', va='bottom',
+                        fontsize=7, color='darkorange',
+                        fontweight='bold', zorder=5)
 
         # Draw children
         if isinstance(children, list):
@@ -182,15 +261,16 @@ def plot_hierarchy_cell(ax, cell, bounds_min, bounds_max, grid_length, depth=0,
                 child_y = parent_y + child_row * child_height
 
                 if isinstance(child, int):
-                    # Leaf child cell
-                    color = get_color_for_depth(depth + 1, max_depth)
+                    # Leaf child cell - use distinct colors per sub-cell
+                    sub_cmap = plt.cm.Pastel1
+                    color = sub_cmap(i / max(num_children, 1))
 
                     rect = patches.Rectangle(
                         (child_x, child_y), child_width, child_height,
                         facecolor=color,
-                        edgecolor='darkblue',
-                        linewidth=1.0,
-                        alpha=0.4,
+                        edgecolor='darkorange',
+                        linewidth=1.5,
+                        alpha=0.6,
                         zorder=3 + depth
                     )
                     ax.add_patch(rect)
@@ -198,11 +278,11 @@ def plot_hierarchy_cell(ax, cell, bounds_min, bounds_max, grid_length, depth=0,
                     if show_ids:
                         center_x = child_x + child_width / 2
                         center_y = child_y + child_height / 2
-                        # Show local child index for refined cells
                         label = f"{parent_id}.{i}"
                         ax.text(center_x, center_y, label,
                                ha='center', va='center',
-                               fontsize=6, color='darkblue', alpha=0.8,
+                               fontsize=7, color='black', alpha=0.9,
+                               fontweight='bold',
                                zorder=5 + depth)
 
                     cells_drawn += 1
@@ -342,6 +422,12 @@ def plot_decomposition_hierarchy(output_file_path, env_file=None, save_path=None
 
     print(f"Total cells drawn: {total_cells}")
 
+    # Draw high-level paths (leads) if present
+    leads = decomp.get('leads', [])
+    if leads:
+        print(f"Drawing leads for {len(leads)} robots")
+        draw_leads(ax, leads, grid_length, bounds_min, bounds_max)
+
     # Set axis limits
     margin = 0.5
     ax.set_xlim(bounds_min[0] - margin, bounds_max[0] + margin)
@@ -351,20 +437,17 @@ def plot_decomposition_hierarchy(output_file_path, env_file=None, save_path=None
     ax.set_ylabel('Y')
 
     # Title
+    leads_info = f', {len(leads)} robot paths' if leads else ''
     ax.set_title(f'Hierarchical Decomposition\n'
                  f'Base Grid: {grid_length}x{grid_length}, '
                  f'Refined: {num_refined}/{len(hierarchy)} cells, '
-                 f'Total: {total_cells} cells')
-
-    # Add colorbar legend
-    from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import Normalize
-    sm = ScalarMappable(cmap=plt.cm.coolwarm, norm=Normalize(0, 5))
-    sm.set_array([])
-    cbar = plt.colorbar(sm, ax=ax, shrink=0.6, pad=0.02)
-    cbar.set_label('Refinement Depth')
+                 f'Total: {total_cells} cells{leads_info}')
 
     ax.grid(True, alpha=0.3)
+
+    # Add legend for robot paths
+    if leads:
+        ax.legend(loc='upper right', fontsize=8)
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')

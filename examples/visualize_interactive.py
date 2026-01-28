@@ -599,10 +599,12 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
         return
 
     # Create figure with space for slider at the bottom
-    fig = plt.figure(figsize=(12, 10))
+    fig_w, fig_h = compute_fig_size(env_min, env_max, max_dim=8)
+    fig = plt.figure(figsize=(fig_w, fig_h + 2))  # extra height for slider/buttons
 
     # Main plot area
-    ax = plt.axes([0.1, 0.2, 0.8, 0.7])
+    plot_bottom = 2.0 / (fig_h + 2)  # reserve ~2 inches at bottom
+    ax = plt.axes([0.1, plot_bottom + 0.05, 0.8, 0.90 - plot_bottom])
     ax.set_xlim(env_min[0], env_max[0])
     ax.set_ylim(env_min[1], env_max[1])
     ax.set_aspect('equal')
@@ -611,125 +613,8 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
     ax.set_title('Multi-Robot SyCLoP Interactive Visualization')
 
     draw_obstacles(ax, env)
-
-    # Draw regions if decomposition data is available
-    # Store high-level path artists for legend
-    high_level_path_artists = []
-
-    # Determine decomposition info from solution or planner config
-    decomp = None
-    grid_size = None
-    bounds_min = None
-    bounds_max = None
-    cell_width = None
-    cell_height = None
-
-    # Priority 1: Use planner config's decomposition.resolution if provided (overrides solution)
-    if planner_config and 'decomposition' in planner_config:
-        planner_decomp = planner_config['decomposition']
-        if planner_decomp.get('type') == 'grid' and 'resolution' in planner_decomp:
-            resolution = planner_decomp['resolution']
-            grid_size = [resolution[0], resolution[1]]  # [x, y] from resolution
-            bounds_min = env_min
-            bounds_max = env_max
-            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
-            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
-            # Use solution's leads if available for high-level path visualization
-            if 'decomposition' in solution and 'leads' in solution['decomposition']:
-                decomp = {'type': 'grid', 'leads': solution['decomposition']['leads']}
-            else:
-                decomp = {'type': 'grid'}
-            print(f"Using decomposition resolution={resolution[:2]} from planner config -> grid_size={grid_size}")
-    # Priority 2: Use solution's decomposition if no planner config provided
-    elif 'decomposition' in solution:
-        decomp = solution['decomposition']
-        if decomp.get('type') == 'grid':
-            grid_size = decomp['grid_size']
-            bounds_min = decomp['bounds']['min']
-            bounds_max = decomp['bounds']['max']
-            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
-            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
-
-    if decomp and decomp.get('type') == 'grid' and grid_size and (show_high_level or show_grid):
-        def get_region_bounds(region_id):
-            """Convert region ID to bounding box coordinates.
-
-            OMPL GridDecomposition uses row-major ordering with the formula:
-                Region ID = x_index * length + y_index
-
-            Where x_index is coord[0] (first dimension) and y_index is coord[1]
-            (second dimension). The grid is indexed from the origin (bounds_min).
-
-            The inverse mapping is:
-                x_index = region_id // length
-                y_index = region_id % length
-
-            Note: grid_size[0] should equal 'length' (cells per dimension).
-            For a 5x5 grid, length=5, so region IDs range from 0 to 24.
-            """
-            # OMPL formula: region_id = x_index * length + y_index
-            # Inverse: x_index = region_id // length, y_index = region_id % length
-            length = grid_size[0]  # Assumes uniform grid (grid_size[0] == grid_size[1])
-            x_index = region_id // length
-            y_index = region_id % length
-            x = bounds_min[0] + x_index * cell_width
-            y = bounds_min[1] + y_index * cell_height
-            return x, y, cell_width, cell_height
-
-        def get_region_center(region_id):
-            x, y, w, h = get_region_bounds(region_id)
-            return x + w / 2, y + h / 2
-
-        # Draw grid lines first (background)
-        if show_grid:
-            for i in range(grid_size[0] + 1):
-                x = bounds_min[0] + i * cell_width
-                ax.axvline(x, color='darkgray', linewidth=1.0, alpha=0.4, linestyle='-', zorder=0)
-
-            for j in range(grid_size[1] + 1):
-                y = bounds_min[1] + j * cell_height
-                ax.axhline(y, color='darkgray', linewidth=1.0, alpha=0.4, linestyle='-', zorder=0)
-
-        if show_high_level and 'leads' in decomp and decomp['leads']:
-            colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
-            for robot_idx, lead in enumerate(decomp['leads']):
-                if lead:
-                    color = colors[robot_idx]
-
-                    # Fill regions along the high-level path with light color
-                    for region_id in lead:
-                        x, y, w, h = get_region_bounds(region_id)
-                        rect = patches.Rectangle((x, y), w, h,
-                                                linewidth=0,
-                                                facecolor=color,
-                                                alpha=0.12,
-                                                zorder=0)
-                        ax.add_patch(rect)
-
-                    # Draw high-level path as connected line through region centers
-                    if len(lead) >= 2:
-                        path_x = []
-                        path_y = []
-                        for region_id in lead:
-                            cx, cy = get_region_center(region_id)
-                            path_x.append(cx)
-                            path_y.append(cy)
-
-                        # Draw the high-level path line (dashed)
-                        hl_line, = ax.plot(path_x, path_y, '--',
-                                          color=color, linewidth=2.5, alpha=0.7,
-                                          zorder=2, marker='s', markersize=6,
-                                          markerfacecolor=color, markeredgecolor='black',
-                                          markeredgewidth=1)
-                        high_level_path_artists.append((hl_line, f'Robot {robot_idx} HL Path'))
-
-                        # Mark start and end of high-level path
-                        start_cx, start_cy = get_region_center(lead[0])
-                        end_cx, end_cy = get_region_center(lead[-1])
-                        ax.plot(start_cx, start_cy, 'o', color=color, markersize=12,
-                               markeredgecolor='black', markeredgewidth=2, alpha=0.8, zorder=3)
-                        ax.plot(end_cx, end_cy, 'D', color=color, markersize=10,
-                               markeredgecolor='black', markeredgewidth=2, alpha=0.8, zorder=3)
+    draw_decomposition(ax, solution, env, planner_config,
+                       show_grid=show_grid, show_high_level=show_high_level)
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
 
@@ -871,6 +756,207 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
 
     plt.show()
 
+def _draw_refined_children(ax, children, parent_x, parent_y, parent_w, parent_h, depth=1):
+    """Recursively draw refined sub-cells within a parent cell.
+
+    Args:
+        ax: matplotlib axes
+        children: list of child IDs (leaf ints or nested [id, [children...]])
+        parent_x, parent_y: bottom-left corner of parent cell
+        parent_w, parent_h: size of parent cell
+        depth: current refinement depth
+    """
+    num_children = len(children)
+    child_grid_len = int(np.ceil(np.sqrt(num_children)))
+    child_w = parent_w / child_grid_len
+    child_h = parent_h / child_grid_len
+
+    sub_cmap = plt.cm.Pastel1
+
+    for i, child in enumerate(children):
+        col = i % child_grid_len
+        row = i // child_grid_len
+        cx = parent_x + col * child_w
+        cy = parent_y + row * child_h
+
+        if isinstance(child, int):
+            # Leaf sub-cell
+            color = sub_cmap(i / max(num_children, 1))
+            rect = patches.Rectangle(
+                (cx, cy), child_w, child_h,
+                facecolor=color, edgecolor='darkorange',
+                linewidth=1.5, alpha=0.6, zorder=3 + depth)
+            ax.add_patch(rect)
+        elif isinstance(child, list) and len(child) >= 2:
+            # Nested refinement
+            nested_children = child[1]
+            if isinstance(nested_children, list):
+                _draw_refined_children(ax, nested_children, cx, cy, child_w, child_h, depth + 1)
+
+
+def draw_decomposition(ax, solution, env, planner_config, show_grid=True, show_high_level=True):
+    """Draw decomposition grid, hierarchy refinements, and high-level paths.
+
+    Args:
+        ax: matplotlib axes
+        solution: solution dict (may contain 'decomposition')
+        env: environment dict with 'robots' list
+        planner_config: planner config dict (may contain 'decomposition.resolution')
+        show_grid: whether to draw grid lines
+        show_high_level: whether to draw high-level paths through regions
+    """
+    env_min = env['environment']['min']
+    env_max = env['environment']['max']
+
+    decomp = None
+    grid_size = None
+    bounds_min = None
+    bounds_max = None
+    cell_width = None
+    cell_height = None
+
+    if planner_config and 'decomposition' in planner_config:
+        planner_decomp = planner_config['decomposition']
+        if planner_decomp.get('type') == 'grid' and 'resolution' in planner_decomp:
+            resolution = planner_decomp['resolution']
+            grid_size = [resolution[0], resolution[1]]
+            bounds_min = env_min
+            bounds_max = env_max
+            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
+            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
+            if 'decomposition' in solution and 'leads' in solution['decomposition']:
+                decomp = {'type': 'grid', 'leads': solution['decomposition']['leads']}
+            else:
+                decomp = {'type': 'grid'}
+            # Pull in hierarchy if available
+            if 'decomposition' in solution and 'hierarchy' in solution['decomposition']:
+                decomp['hierarchy'] = solution['decomposition']['hierarchy']
+    elif 'decomposition' in solution:
+        decomp = solution['decomposition']
+        if decomp.get('type') == 'grid':
+            grid_size = decomp['grid_size']
+            bounds_min = decomp['bounds']['min']
+            bounds_max = decomp['bounds']['max']
+            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
+            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
+
+    if not (decomp and decomp.get('type') == 'grid' and grid_size and (show_high_level or show_grid)):
+        return
+
+    grid_length = grid_size[0]
+
+    def get_region_bounds(region_id):
+        x_index = region_id // grid_length
+        y_index = region_id % grid_length
+        x = bounds_min[0] + x_index * cell_width
+        y = bounds_min[1] + y_index * cell_height
+        return x, y, cell_width, cell_height
+
+    def get_region_center(region_id):
+        x, y, w, h = get_region_bounds(region_id)
+        return x + w / 2, y + h / 2
+
+    # Draw grid lines
+    if show_grid:
+        for i in range(grid_size[0] + 1):
+            x = bounds_min[0] + i * cell_width
+            ax.axvline(x, color='darkgray', linewidth=1.0, alpha=0.4, linestyle='-', zorder=0)
+        for j in range(grid_size[1] + 1):
+            y = bounds_min[1] + j * cell_height
+            ax.axhline(y, color='darkgray', linewidth=1.0, alpha=0.4, linestyle='-', zorder=0)
+
+    # Draw hierarchy with refinements (like visualize_decomposition.py)
+    hierarchy = decomp.get('hierarchy', [])
+    if show_grid and hierarchy:
+        depth_cmap = plt.cm.coolwarm
+        for cell in hierarchy:
+            if isinstance(cell, int):
+                # Unrefined leaf cell — light fill
+                rx, ry, rw, rh = get_region_bounds(cell)
+                color = depth_cmap(0.0)
+                rect = patches.Rectangle(
+                    (rx, ry), rw, rh,
+                    facecolor=color, edgecolor='black',
+                    linewidth=1.0, alpha=0.15, zorder=1)
+                ax.add_patch(rect)
+            elif isinstance(cell, list) and len(cell) >= 2:
+                # Refined cell: [parent_id, [children...]]
+                parent_id = cell[0]
+                children = cell[1]
+                rx, ry, rw, rh = get_region_bounds(parent_id)
+
+                # Highlight refined region background
+                rect_fill = patches.Rectangle(
+                    (rx, ry), rw, rh,
+                    facecolor='#FFFFCC', edgecolor='none',
+                    alpha=0.4, zorder=1)
+                ax.add_patch(rect_fill)
+                # Dashed outline for refined parent
+                rect_border = patches.Rectangle(
+                    (rx, ry), rw, rh,
+                    facecolor='none', edgecolor='darkorange',
+                    linewidth=2.0, linestyle='--', alpha=0.8, zorder=4)
+                ax.add_patch(rect_border)
+
+                # Draw sub-cells
+                if isinstance(children, list):
+                    _draw_refined_children(ax, children, rx, ry, rw, rh, depth=1)
+
+    # Draw high-level paths (leads)
+    if show_high_level and 'leads' in decomp and decomp['leads']:
+        colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
+        for robot_idx, lead in enumerate(decomp['leads']):
+            if lead:
+                color = colors[robot_idx]
+                for region_id in lead:
+                    x, y, w, h = get_region_bounds(region_id)
+                    rect = patches.Rectangle((x, y), w, h,
+                                            linewidth=0,
+                                            facecolor=color,
+                                            alpha=0.12,
+                                            zorder=0)
+                    ax.add_patch(rect)
+                if len(lead) >= 2:
+                    path_x = []
+                    path_y = []
+                    for region_id in lead:
+                        cx, cy = get_region_center(region_id)
+                        path_x.append(cx)
+                        path_y.append(cy)
+                    ax.plot(path_x, path_y, '--',
+                            color=color, linewidth=2.5, alpha=0.7,
+                            zorder=2, marker='s', markersize=6,
+                            markerfacecolor=color, markeredgecolor='black',
+                            markeredgewidth=1)
+                    start_cx, start_cy = get_region_center(lead[0])
+                    end_cx, end_cy = get_region_center(lead[-1])
+                    ax.plot(start_cx, start_cy, 'o', color=color, markersize=12,
+                           markeredgecolor='black', markeredgewidth=2, alpha=0.8, zorder=3)
+                    ax.plot(end_cx, end_cy, 'D', color=color, markersize=10,
+                           markeredgecolor='black', markeredgewidth=2, alpha=0.8, zorder=3)
+
+
+def compute_fig_size(env_min, env_max, max_dim=8):
+    """Compute figure size that matches the environment aspect ratio.
+
+    Args:
+        env_min, env_max: environment bounds as [x, y]
+        max_dim: maximum figure dimension in inches
+
+    Returns:
+        (width, height) tuple in inches
+    """
+    w = env_max[0] - env_min[0]
+    h = env_max[1] - env_min[1]
+    if w <= 0 or h <= 0:
+        return (max_dim, max_dim)
+    aspect = w / h
+    if aspect >= 1.0:
+        return (max_dim, max_dim / aspect)
+    else:
+        return (max_dim * aspect, max_dim)
+
+
 def static_gradient_plot(env_file, solution_file, config_file=None,
                          models_path=None, planner_config_file=None,
                          output_file=None):
@@ -885,7 +971,8 @@ def static_gradient_plot(env_file, solution_file, config_file=None,
     env_min = env['environment']['min']
     env_max = env['environment']['max']
 
-    fig, ax = plt.subplots(figsize=(12, 10))
+    fig_w, fig_h = compute_fig_size(env_min, env_max, max_dim=8)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     ax.set_xlim(env_min[0], env_max[0])
     ax.set_ylim(env_min[1], env_max[1])
     ax.set_aspect('equal')
@@ -894,6 +981,7 @@ def static_gradient_plot(env_file, solution_file, config_file=None,
     ax.set_title('Multi-Robot Paths (gradient: light=start, dark=finish)')
 
     draw_obstacles(ax, env)
+    draw_decomposition(ax, solution, env, planner_config)
 
     base_colors = plt.cm.tab10(np.linspace(0, 1, max(len(paths), 1)))
 

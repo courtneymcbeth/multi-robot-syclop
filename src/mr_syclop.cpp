@@ -83,6 +83,7 @@ void MRSyCLoPPlanner::loadProblem(
     const std::vector<double>& env_min,
     const std::vector<double>& env_max)
 {
+    ScopedFunctionTimer timer(timing_log_, "loadProblem");
     // Clean up any previous problem
     cleanup();
 
@@ -121,6 +122,7 @@ void MRSyCLoPPlanner::loadProblem(
 
 void MRSyCLoPPlanner::setupDecomposition()
 {
+    ScopedFunctionTimer timer(timing_log_, "setupDecomposition");
 #ifdef DBG_PRINTS
     std::cout << "Creating decomposition..." << std::endl;
 #endif
@@ -139,6 +141,7 @@ void MRSyCLoPPlanner::setupDecomposition()
 
 void MRSyCLoPPlanner::setupCollisionManager()
 {
+    ScopedFunctionTimer timer(timing_log_, "setupCollisionManager");
 #ifdef DBG_PRINTS
     std::cout << "Setting up collision manager..." << std::endl;
 #endif
@@ -152,6 +155,7 @@ void MRSyCLoPPlanner::setupCollisionManager()
 
 void MRSyCLoPPlanner::setupDynobenchObstacles()
 {
+    ScopedFunctionTimer timer(timing_log_, "setupDynobenchObstacles");
 #ifdef DBG_PRINTS
     std::cout << "Converting obstacles to dynobench format..." << std::endl;
 #endif
@@ -189,6 +193,7 @@ void MRSyCLoPPlanner::setupDynobenchObstacles()
 
 void MRSyCLoPPlanner::setupRobots()
 {
+    ScopedFunctionTimer timer(timing_log_, "setupRobots");
 #ifdef DBG_PRINTS
     std::cout << "Initializing robots..." << std::endl;
 #endif
@@ -225,6 +230,7 @@ void MRSyCLoPPlanner::setupRobots()
 
 void MRSyCLoPPlanner::computeHighLevelPaths()
 {
+    ScopedFunctionTimer timer(timing_log_, "computeHighLevelPaths");
     if (!problem_loaded_) {
         throw std::runtime_error("Problem not loaded. Call loadProblem() first.");
     }
@@ -257,6 +263,7 @@ void MRSyCLoPPlanner::computeHighLevelPaths()
 
 void MRSyCLoPPlanner::computeGuidedPaths()
 {
+    ScopedFunctionTimer timer(timing_log_, "computeGuidedPaths");
     /// @todo @imngui: Need to check if this is actually using the high level paths properly
 
     if (!problem_loaded_) {
@@ -324,6 +331,7 @@ void MRSyCLoPPlanner::computeGuidedPaths()
 
 void MRSyCLoPPlanner::computeGuidedPathsWithCompositeDBRRT()
 {
+    ScopedFunctionTimer timer(timing_log_, "computeGuidedPathsWithCompositeDBRRT");
 #ifdef DBG_PRINTS
     std::cout << "Using CompositeDBRRT for joint multi-robot planning..." << std::endl;
 #endif
@@ -454,6 +462,7 @@ std::shared_ptr<oc::PathControl> MRSyCLoPPlanner::convertDynobenchTrajectory(
 
 void MRSyCLoPPlanner::segmentGuidedPaths()
 {
+    ScopedFunctionTimer timer(timing_log_, "segmentGuidedPaths");
     if (!problem_loaded_) {
         throw std::runtime_error("Problem not loaded. Call loadProblem() first.");
     }
@@ -736,6 +745,7 @@ bool MRSyCLoPPlanner::checkTwoRobotCollision(
 
 bool MRSyCLoPPlanner::checkSegmentsForCollisions()
 {
+    ScopedFunctionTimer timer(timing_log_, "checkSegmentsForCollisions");
     // Clear previous collision data
     segment_collisions_.clear();
 
@@ -944,6 +954,7 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
     const std::vector<double>& subproblem_env_min,
     const std::vector<double>& subproblem_env_max)
 {
+    ScopedFunctionTimer timer(timing_log_, "useCompositePlanner");
     std::cout << "  Subproblem robots: ";
     for (size_t idx : robot_indices) {
         std::cout << idx << " ";
@@ -1040,6 +1051,7 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
 
 bool MRSyCLoPPlanner::resolveCollisions()
 {
+    ScopedFunctionTimer timer(timing_log_, "resolveCollisions");
     // Keep resolving collisions until none remain or a collision exhausts all strategies
     while (!segment_collisions_.empty()) {
         // Check for timeout before attempting to resolve each collision
@@ -1113,6 +1125,7 @@ bool MRSyCLoPPlanner::isTimeoutExceeded() const
 
 MRSyCLoPResult MRSyCLoPPlanner::plan()
 {
+    ScopedFunctionTimer timer(timing_log_, "plan");
     if (!problem_loaded_) {
         throw std::runtime_error("Problem not loaded. Call loadProblem() first.");
     }
@@ -1232,6 +1245,7 @@ bool MRSyCLoPPlanner::collisionPersistsForRobots(size_t robot_1, size_t robot_2,
 bool MRSyCLoPPlanner::resolveCollisionWithStrategies(const SegmentCollision& collision,
                                                       CollisionResolutionEntry& log_entry)
 {
+    ScopedFunctionTimer timer(timing_log_, "resolveCollisionWithStrategies");
     const auto& config = config_.collision_resolution_config;
 
     // Calculate max expansion layers if auto-detect
@@ -1382,6 +1396,7 @@ bool MRSyCLoPPlanner::extractReplanningBounds(
     PathUpdateInfo& update_info_1,
     PathUpdateInfo& update_info_2)
 {
+    ScopedFunctionTimer timer(timing_log_, "extractReplanningBounds");
     size_t robot_1 = collision.robot_index_1;
     size_t robot_2 = collision.robot_index_2;
 
@@ -1511,6 +1526,7 @@ bool MRSyCLoPPlanner::extractReplanningBounds(
 
 void MRSyCLoPPlanner::recheckCollisionsFromTimestep(int start_timestep)
 {
+    ScopedFunctionTimer timer(timing_log_, "recheckCollisionsFromTimestep");
 #ifdef DBG_PRINTS
     std::cout << "    Re-checking collisions from timestep " << start_timestep << std::endl;
 #endif
@@ -1774,6 +1790,7 @@ void MRSyCLoPPlanner::integrateRefinedPaths(
     const PathUpdateInfo& update_info_1,
     const PathUpdateInfo& update_info_2)
 {
+    ScopedFunctionTimer timer(timing_log_, "integrateRefinedPaths");
     std::vector<PathUpdateInfo> update_infos = {update_info_1, update_info_2};
 
     for (size_t i = 0; i < robot_indices.size(); ++i) {
@@ -1924,6 +1941,7 @@ bool MRSyCLoPPlanner::extractReplanningBoundsForExpandedRegion(
     PathUpdateInfo& update_info_1,
     PathUpdateInfo& update_info_2)
 {
+    ScopedFunctionTimer timer(timing_log_, "extractReplanningBoundsForExpandedRegion");
     size_t robot_1 = collision.robot_index_1;
     size_t robot_2 = collision.robot_index_2;
 
@@ -2063,6 +2081,7 @@ bool MRSyCLoPPlanner::resolveWithHierarchicalExpansionRefinement(
     int min_expansion_layer,
     CollisionResolutionEntry& log_entry)
 {
+    ScopedFunctionTimer timer(timing_log_, "resolveWithHierarchicalExpansionRefinement");
     size_t robot_1 = collision.robot_index_1;
     size_t robot_2 = collision.robot_index_2;
 
@@ -2166,6 +2185,7 @@ bool MRSyCLoPPlanner::attemptRefinementAtExpansionLevel(
     int max_refinement_levels,
     CollisionResolutionEntry& log_entry)
 {
+    ScopedFunctionTimer timer(timing_log_, "attemptRefinementAtExpansionLevel");
     resolution_stats_.decomposition_refinement_attempts++;
 
     for (int refinement_level = 1; refinement_level <= max_refinement_levels; ++refinement_level) {
@@ -2217,6 +2237,7 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
     const std::vector<int>& expanded_regions,
     int refinement_level)
 {
+    ScopedFunctionTimer timer(timing_log_, "refineExpandedRegion");
     size_t robot_1 = collision.robot_index_1;
     size_t robot_2 = collision.robot_index_2;
 
@@ -2548,6 +2569,7 @@ bool MRSyCLoPPlanner::resolveWithLocalCompositePlanner(
     const SegmentCollision& collision,
     CollisionResolutionEntry& log_entry)
 {
+    ScopedFunctionTimer timer(timing_log_, "resolveWithLocalCompositePlanner");
     size_t robot_1 = collision.robot_index_1;
     size_t robot_2 = collision.robot_index_2;
 
@@ -2665,6 +2687,7 @@ bool MRSyCLoPPlanner::resolveWithLocalCompositePlanner(
 bool MRSyCLoPPlanner::resolveWithFullProblemCompositePlanner(int max_attempts,
                                                              CollisionResolutionEntry& log_entry)
 {
+    ScopedFunctionTimer timer(timing_log_, "resolveWithFullProblemCompositePlanner");
     std::cout << "    Full-problem composite planner: planning ALL "
               << robots_.size() << " robots from original starts to goals" << std::endl;
 
@@ -2905,6 +2928,37 @@ void MRSyCLoPPlanner::exportDebugData(YAML::Node& output) const {
         guided_paths_node.push_back(robot_path_node);
     }
     output["guided_paths"] = guided_paths_node;
+}
+
+void MRSyCLoPPlanner::exportTimingData(YAML::Node& output) const
+{
+    YAML::Node timing_node;
+
+    // Per-function aggregates
+    YAML::Node summary_node;
+    auto totals = timing_log_.totalByFunction();
+    auto counts = timing_log_.countByFunction();
+    for (const auto& [func, total] : totals) {
+        YAML::Node func_node;
+        func_node["total_seconds"] = total;
+        func_node["call_count"] = counts.at(func);
+        func_node["avg_seconds"] = total / counts.at(func);
+        summary_node[func] = func_node;
+    }
+    timing_node["summary"] = summary_node;
+
+    // Full call log (ordered by invocation)
+    YAML::Node log_node;
+    for (const auto& entry : timing_log_.entries()) {
+        YAML::Node entry_node;
+        entry_node["function"] = entry.function_name;
+        entry_node["elapsed_seconds"] = entry.elapsed_seconds;
+        entry_node["call_index"] = entry.call_index;
+        log_node.push_back(entry_node);
+    }
+    timing_node["call_log"] = log_node;
+
+    output["timing"] = timing_node;
 }
 
 void MRSyCLoPPlanner::saveDecompositionToFile(
@@ -3566,6 +3620,9 @@ int main(int argc, char* argv[]) {
 
         // Export debug data (decomposition, segments, collisions, etc.) - always export, even on failure
         planner.exportDebugData(output);
+
+        // Export function timing data
+        planner.exportTimingData(output);
 
         if (result.success) {
             YAML::Node result_node;

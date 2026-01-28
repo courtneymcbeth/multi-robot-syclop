@@ -4,8 +4,10 @@
 #include <ompl/base/spaces/RealVectorStateSpace.h>
 #include <ompl/control/SpaceInformation.h>
 #include <fcl/fcl.h>
+#include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <tuple>
 #include <vector>
 #include <string>
@@ -18,6 +20,76 @@
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
+
+// ============================================================================
+// Function Timing Infrastructure
+// ============================================================================
+
+struct FunctionTimingEntry {
+    std::string function_name;
+    double elapsed_seconds;
+    int call_index;  // Distinguishes repeated calls to the same function
+};
+
+class FunctionTimingLog {
+public:
+    void record(const std::string& name, double elapsed) {
+        int idx = ++call_counts_[name];
+        entries_.push_back({name, elapsed, idx});
+    }
+
+    const std::vector<FunctionTimingEntry>& entries() const { return entries_; }
+
+    void clear() {
+        entries_.clear();
+        call_counts_.clear();
+    }
+
+    // Aggregate: total time per function
+    std::map<std::string, double> totalByFunction() const {
+        std::map<std::string, double> totals;
+        for (const auto& e : entries_) {
+            totals[e.function_name] += e.elapsed_seconds;
+        }
+        return totals;
+    }
+
+    // Aggregate: call count per function
+    std::map<std::string, int> countByFunction() const {
+        std::map<std::string, int> counts;
+        for (const auto& e : entries_) {
+            counts[e.function_name]++;
+        }
+        return counts;
+    }
+
+private:
+    std::vector<FunctionTimingEntry> entries_;
+    std::map<std::string, int> call_counts_;
+};
+
+// RAII timer that records elapsed time on destruction
+class ScopedFunctionTimer {
+public:
+    ScopedFunctionTimer(FunctionTimingLog& log, const std::string& name)
+        : log_(log), name_(name),
+          start_(std::chrono::steady_clock::now()) {}
+
+    ~ScopedFunctionTimer() {
+        auto end = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(end - start_).count();
+        log_.record(name_, elapsed);
+    }
+
+    // Non-copyable
+    ScopedFunctionTimer(const ScopedFunctionTimer&) = delete;
+    ScopedFunctionTimer& operator=(const ScopedFunctionTimer&) = delete;
+
+private:
+    FunctionTimingLog& log_;
+    std::string name_;
+    std::chrono::steady_clock::time_point start_;
+};
 
 // ============================================================================
 // Configuration Structure
@@ -260,6 +332,10 @@ public:
     // Debug output
     void exportDebugData(YAML::Node& output) const;
 
+    // Timing data
+    void exportTimingData(YAML::Node& output) const;
+    const FunctionTimingLog& getTimingLog() const { return timing_log_; }
+
 private:
     // Configuration
     MRSyCLoPConfig config_;
@@ -291,6 +367,9 @@ private:
     // Timeout tracking
     std::chrono::steady_clock::time_point planning_start_time_;
     bool isTimeoutExceeded() const;
+
+    // Function timing log
+    FunctionTimingLog timing_log_;
 
     // Collision manager for obstacles (shared with guided planners)
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager_;
