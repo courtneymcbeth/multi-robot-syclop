@@ -1392,12 +1392,38 @@ bool MRSyCLoPPlanner::extractReplanningBounds(
         auto si = robots_[robot_idx]->getSpaceInformation();
         ob::State* temp_state = si->getStateSpace()->allocState();
 
+        int collision_ts = collision.timestep;
+
+        // Check if robot has finished its path before the collision timestep.
+        // In that case, the robot is stationary at its goal — no replanning needed.
+        int path_end_timestep = 0;
+        if (!path_segments_[robot_idx].empty()) {
+            path_end_timestep = path_segments_[robot_idx].back().end_timestep;
+        }
+
+        if (collision_ts >= path_end_timestep) {
+            // Robot is stationary at goal — entry and exit are both the goal state
+            info.entry_state = si->getStateSpace()->allocState();
+            info.exit_state = si->getStateSpace()->allocState();
+            si->copyState(info.entry_state, goal_states_[robot_idx]);
+            si->copyState(info.exit_state, goal_states_[robot_idx]);
+            info.start_timestep = path_end_timestep;
+            info.end_timestep = path_end_timestep;
+            info.start_segment_idx = path_segments_[robot_idx].empty() ? 0 : path_segments_[robot_idx].size() - 1;
+            info.end_segment_idx = info.start_segment_idx;
+            si->getStateSpace()->freeState(temp_state);
+#ifdef DBG_PRINTS
+            std::cout << "        Robot " << robot_idx << " is stationary at goal (path ended at timestep "
+                      << path_end_timestep << ", collision at " << collision_ts << ")" << std::endl;
+#endif
+            return true;
+        }
+
         // Find entry to collision region (scan backwards)
         int entry_timestep = 0;
         size_t entry_segment = 0;
         bool found_entry = false;
 
-        int collision_ts = collision.timestep;
         for (int t = collision_ts; t >= 0; --t) {
             const PathSegment* seg = findSegmentAtTimestep(robot_idx, t);
             if (!seg) break;
@@ -1428,10 +1454,7 @@ bool MRSyCLoPPlanner::extractReplanningBounds(
         size_t exit_segment = 0;
         bool found_exit = false;
 
-        int max_timestep = 0;
-        if (!path_segments_[robot_idx].empty()) {
-            max_timestep = path_segments_[robot_idx].back().end_timestep;
-        }
+        int max_timestep = path_end_timestep;
 
         for (int t = collision_ts; t < max_timestep; ++t) {
             const PathSegment* seg = findSegmentAtTimestep(robot_idx, t);
@@ -1450,9 +1473,9 @@ bool MRSyCLoPPlanner::extractReplanningBounds(
         }
 
         if (!found_exit) {
-            // Robot's goal is in collision region
+            // Robot's goal is in collision region (or robot has finished its path)
             exit_timestep = max_timestep;
-            exit_segment = path_segments_[robot_idx].size();
+            exit_segment = path_segments_[robot_idx].size() - 1;  // Use last valid segment index
         }
 
         // Allocate and set entry/exit states
@@ -1914,12 +1937,38 @@ bool MRSyCLoPPlanner::extractReplanningBoundsForExpandedRegion(
         auto si = robots_[robot_idx]->getSpaceInformation();
         ob::State* temp_state = si->getStateSpace()->allocState();
 
+        int collision_ts = collision.timestep;
+
+        // Check if robot has finished its path before the collision timestep.
+        // In that case, the robot is stationary at its goal — no replanning needed.
+        int path_end_timestep = 0;
+        if (!path_segments_[robot_idx].empty()) {
+            path_end_timestep = path_segments_[robot_idx].back().end_timestep;
+        }
+
+        if (collision_ts >= path_end_timestep) {
+            // Robot is stationary at goal — entry and exit are both the goal state
+            info.entry_state = si->getStateSpace()->allocState();
+            info.exit_state = si->getStateSpace()->allocState();
+            si->copyState(info.entry_state, goal_states_[robot_idx]);
+            si->copyState(info.exit_state, goal_states_[robot_idx]);
+            info.start_timestep = path_end_timestep;
+            info.end_timestep = path_end_timestep;
+            info.start_segment_idx = path_segments_[robot_idx].empty() ? 0 : path_segments_[robot_idx].size() - 1;
+            info.end_segment_idx = info.start_segment_idx;
+            si->getStateSpace()->freeState(temp_state);
+#ifdef DBG_PRINTS
+            std::cout << "        Robot " << robot_idx << " is stationary at goal (path ended at timestep "
+                      << path_end_timestep << ", collision at " << collision_ts << ")" << std::endl;
+#endif
+            return true;
+        }
+
         // Find entry to expanded region (scan backwards from collision)
         int entry_timestep = 0;
         size_t entry_segment = 0;
         bool found_entry = false;
 
-        int collision_ts = collision.timestep;
         for (int t = collision_ts; t >= 0; --t) {
             const PathSegment* seg = findSegmentAtTimestep(robot_idx, t);
             if (!seg) break;
@@ -1952,10 +2001,7 @@ bool MRSyCLoPPlanner::extractReplanningBoundsForExpandedRegion(
         size_t exit_segment = 0;
         bool found_exit = false;
 
-        int max_timestep = 0;
-        if (!path_segments_[robot_idx].empty()) {
-            max_timestep = path_segments_[robot_idx].back().end_timestep;
-        }
+        int max_timestep = path_end_timestep;
 
         for (int t = collision_ts; t < max_timestep; ++t) {
             const PathSegment* seg = findSegmentAtTimestep(robot_idx, t);
@@ -1974,9 +2020,9 @@ bool MRSyCLoPPlanner::extractReplanningBoundsForExpandedRegion(
         }
 
         if (!found_exit) {
-            // Robot's goal is in the expanded region
+            // Robot's goal is in the expanded region (or robot has finished its path)
             exit_timestep = max_timestep;
-            exit_segment = path_segments_[robot_idx].size();
+            exit_segment = path_segments_[robot_idx].size() - 1;  // Use last valid segment index
         }
 
         // Allocate and set entry/exit states
@@ -2024,18 +2070,37 @@ bool MRSyCLoPPlanner::resolveWithHierarchicalExpansionRefinement(
     ob::State* state_1 = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
     ob::State* state_2 = robots_[robot_2]->getSpaceInformation()->getStateSpace()->allocState();
 
-    // Locate collision region
+    // Locate collision region - handle robots that have finished their paths (stationary at goal)
     const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
     const PathSegment* seg_2 = findSegmentAtTimestep(robot_2, collision.timestep);
 
-    if (!seg_1 || !seg_2) {
-        std::cout << "    Cannot find segments at collision timestep" << std::endl;
+    // Get state for robot 1 at collision time
+    if (seg_1) {
+        propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
+    } else if (!path_segments_[robot_1].empty()) {
+        // Robot has reached its goal - use final state
+        const auto& last_seg = path_segments_[robot_1].back();
+        robots_[robot_1]->getSpaceInformation()->copyState(state_1, last_seg.end_state);
+    } else {
+        std::cout << "    Robot " << robot_1 << " has no path segments" << std::endl;
         robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
         robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
         return false;
     }
 
-    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, state_1);
+    // Get state for robot 2 at collision time (needed for potential future use)
+    if (seg_2) {
+        propagateToTimestep(robot_2, seg_2->segment_index, collision.timestep, state_2);
+    } else if (!path_segments_[robot_2].empty()) {
+        // Robot has reached its goal - use final state
+        const auto& last_seg = path_segments_[robot_2].back();
+        robots_[robot_2]->getSpaceInformation()->copyState(state_2, last_seg.end_state);
+    } else {
+        std::cout << "    Robot " << robot_2 << " has no path segments" << std::endl;
+        robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(state_1);
+        robots_[robot_2]->getSpaceInformation()->getStateSpace()->freeState(state_2);
+        return false;
+    }
     int collision_region = decomp_->locateRegion(state_1);
 
     std::cout << "    Collision in region " << collision_region << std::endl;
@@ -2188,12 +2253,50 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
         return false;
     }
 
-    // Validate that entry/exit states are within local decomposition bounds
-    std::vector<ob::State*> local_starts = {update_info_1.entry_state, update_info_2.entry_state};
-    std::vector<ob::State*> local_goals = {update_info_1.exit_state, update_info_2.exit_state};
+    // Determine which robots need replanning (stationary robots have entry == exit timestep)
+    bool robot_1_stationary = (update_info_1.start_timestep == update_info_1.end_timestep);
+    bool robot_2_stationary = (update_info_2.start_timestep == update_info_2.end_timestep);
 
+    if (robot_1_stationary && robot_2_stationary) {
+        // Both robots are stationary — can't replan either one
+#ifdef DBG_PRINTS
+        std::cout << "        Both robots are stationary at goal, cannot refine" << std::endl;
+#endif
+        freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+        return false;
+    }
+
+    // Build lists of robots that need replanning
+    std::vector<size_t> replan_robot_indices;
+    std::vector<ob::State*> replan_starts;
+    std::vector<ob::State*> replan_goals;
+    // Track which index in replan arrays corresponds to which collision robot (0=robot_1, 1=robot_2)
+    std::vector<int> replan_to_collision_idx;
+
+    if (!robot_1_stationary) {
+        replan_robot_indices.push_back(robot_1);
+        replan_starts.push_back(update_info_1.entry_state);
+        replan_goals.push_back(update_info_1.exit_state);
+        replan_to_collision_idx.push_back(0);
+    }
+    if (!robot_2_stationary) {
+        replan_robot_indices.push_back(robot_2);
+        replan_starts.push_back(update_info_2.entry_state);
+        replan_goals.push_back(update_info_2.exit_state);
+        replan_to_collision_idx.push_back(1);
+    }
+
+#ifdef DBG_PRINTS
+    if (robot_1_stationary) {
+        std::cout << "        Robot " << robot_1 << " is stationary at goal, only replanning robot " << robot_2 << std::endl;
+    } else if (robot_2_stationary) {
+        std::cout << "        Robot " << robot_2 << " is stationary at goal, only replanning robot " << robot_1 << std::endl;
+    }
+#endif
+
+    // Validate that entry/exit states of robots to replan are within local decomposition bounds
     bool states_in_bounds = true;
-    for (const auto* state : local_starts) {
+    for (const auto* state : replan_starts) {
         if (local_decomp->locateRegion(state) < 0) {
             states_in_bounds = false;
 #ifdef DBG_PRINTS
@@ -2203,7 +2306,7 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
         }
     }
     if (states_in_bounds) {
-        for (const auto* state : local_goals) {
+        for (const auto* state : replan_goals) {
             if (local_decomp->locateRegion(state) < 0) {
                 states_in_bounds = false;
 #ifdef DBG_PRINTS
@@ -2219,27 +2322,34 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
         return false;
     }
 
-    // MAPF replanning on the refined decomposition
+    // MAPF replanning on the refined decomposition (only for robots that need replanning)
     auto mapf_solver = createMAPFSolver(
         config_.mapf_config.method,
         config_.mapf_config.region_capacity,
         config_.planning_time_limit);
 
     auto local_high_level_paths = mapf_solver->solve(
-        local_decomp, local_starts, local_goals,
+        local_decomp, replan_starts, replan_goals,
         obstacles_, config_.mapf_config.max_obstacle_volume_percent);
 
-    if (local_high_level_paths.empty() ||
-        local_high_level_paths[0].empty() ||
-        local_high_level_paths[1].empty()) {
+    if (local_high_level_paths.empty()) {
 #ifdef DBG_PRINTS
         std::cout << "        MAPF failed" << std::endl;
 #endif
         freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
         return false;
     }
+    for (size_t i = 0; i < replan_robot_indices.size(); ++i) {
+        if (i >= local_high_level_paths.size() || local_high_level_paths[i].empty()) {
+#ifdef DBG_PRINTS
+            std::cout << "        MAPF failed for robot " << replan_robot_indices[i] << std::endl;
+#endif
+            freeUpdateInfoStates(robot_1, robot_2, update_info_1, update_info_2);
+            return false;
+        }
+    }
 
-    // Guided planning
+    // Guided planning (only for robots that need replanning)
     auto guided_planner = createGuidedPlannerWithDBRRT(
         config_.guided_planner_method,
         config_.guided_planner_config,
@@ -2247,29 +2357,28 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
         collision_manager_,
         dynobench_obstacles_);
 
-    std::vector<size_t> robot_indices = {robot_1, robot_2};
-    std::vector<mr_syclop::GuidedPlanningResult> local_results;
+    std::vector<mr_syclop::GuidedPlanningResult> replan_results;
 
-    bool both_succeeded = true;
-    for (size_t i = 0; i < robot_indices.size(); ++i) {
-        size_t robot_idx = robot_indices[i];
+    bool all_succeeded = true;
+    for (size_t i = 0; i < replan_robot_indices.size(); ++i) {
+        size_t robot_idx = replan_robot_indices[i];
         mr_syclop::GuidedPlanningResult result = guided_planner->solve(
             robots_[robot_idx],
             local_decomp,
-            local_starts[i],
-            local_goals[i],
+            replan_starts[i],
+            replan_goals[i],
             local_high_level_paths[i],
             robot_idx);
 
-        local_results.push_back(result);
+        replan_results.push_back(result);
 
         if (!result.success) {
-            both_succeeded = false;
+            all_succeeded = false;
             break;
         }
     }
 
-    if (!both_succeeded) {
+    if (!all_succeeded) {
 #ifdef DBG_PRINTS
         std::cout << "        Guided planning failed" << std::endl;
 #endif
@@ -2277,12 +2386,41 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
         return false;
     }
 
-    // Success! Integrate refined paths
+    // Success! Integrate refined paths (only for robots that were replanned)
 #ifdef DBG_PRINTS
     std::cout << "        Planning succeeded, integrating refined paths" << std::endl;
 #endif
 
-    integrateRefinedPaths(robot_indices, local_results, update_info_1, update_info_2);
+    // Build the full local_results array expected by integrateRefinedPaths
+    // (must have entries for both robots in order: robot_1, robot_2)
+    std::vector<size_t> all_robot_indices = {robot_1, robot_2};
+    std::vector<mr_syclop::GuidedPlanningResult> all_local_results(2);
+
+    // Fill in results for robots that were replanned
+    size_t replan_idx = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        bool is_stationary = (i == 0) ? robot_1_stationary : robot_2_stationary;
+        if (is_stationary) {
+            // Stationary robot: mark as success with null path (no change needed)
+            all_local_results[i].success = true;
+            all_local_results[i].path = nullptr;
+            all_local_results[i].robot_index = all_robot_indices[i];
+        } else {
+            all_local_results[i] = replan_results[replan_idx++];
+        }
+    }
+
+    // Only integrate paths for non-stationary robots
+    for (size_t i = 0; i < 2; ++i) {
+        if (all_local_results[i].path != nullptr) {
+            std::vector<size_t> single_robot = {all_robot_indices[i]};
+            std::vector<mr_syclop::GuidedPlanningResult> single_result = {all_local_results[i]};
+            PathUpdateInfo& update_info = (i == 0) ? update_info_1 : update_info_2;
+            // Use a dummy update_info for the second parameter (integrateRefinedPaths
+            // only processes robots in the robot_indices vector)
+            integrateRefinedPaths(single_robot, single_result, update_info, update_info);
+        }
+    }
 
     // Re-check collisions
     recheckCollisionsFromTimestep(getRecheckStartTimestep(collision));
@@ -2426,16 +2564,22 @@ bool MRSyCLoPPlanner::resolveWithLocalCompositePlanner(
     attempt.strategy = "local_composite";
 
     // Locate collision region and get expanded region for the subproblem
+    // Handle robots that have finished their paths (stationary at goal)
     ob::State* temp_state = robots_[robot_1]->getSpaceInformation()->getStateSpace()->allocState();
     const PathSegment* seg_1 = findSegmentAtTimestep(robot_1, collision.timestep);
-    if (!seg_1) {
+    if (seg_1) {
+        propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, temp_state);
+    } else if (!path_segments_[robot_1].empty()) {
+        // Robot has reached its goal - use final state
+        const auto& last_seg = path_segments_[robot_1].back();
+        robots_[robot_1]->getSpaceInformation()->copyState(temp_state, last_seg.end_state);
+    } else {
         robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(temp_state);
-        std::cout << "    Cannot find segment at collision timestep" << std::endl;
+        std::cout << "    Robot " << robot_1 << " has no path segments" << std::endl;
         attempt.planning_succeeded = false;
         log_entry.attempts.push_back(attempt);
         return false;
     }
-    propagateToTimestep(robot_1, seg_1->segment_index, collision.timestep, temp_state);
     int collision_region = decomp_->locateRegion(temp_state);
     robots_[robot_1]->getSpaceInformation()->getStateSpace()->freeState(temp_state);
 
