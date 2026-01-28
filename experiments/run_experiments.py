@@ -291,7 +291,7 @@ def run_planner(executable, problem_file, output_file, config_file, timeout, log
 
 
 def run_single_experiment(scenario_name, scenario_path, planner_name, planner_config,
-                         num_robots, seed, config, base_dir, verbose=False):
+                         num_robots, seed, config, base_dir, verbose=False, overwrite=False):
     """Run a single experiment (one scenario, one planner, one robot count, one seed)."""
     # Paths
     problems_dir = base_dir / 'problems' / scenario_name / f'robots_{num_robots}'
@@ -304,7 +304,7 @@ def run_single_experiment(scenario_name, scenario_path, planner_name, planner_co
     config_file = configs_dir / f'seed_{seed}.yaml'
 
     # Skip if result already exists (resume support) and config hasn't changed
-    if result_file.exists():
+    if result_file.exists() and not overwrite:
         with open(result_file, 'r') as f:
             existing = yaml.safe_load(f)
             # Check if planner config has changed by comparing hashes
@@ -379,7 +379,7 @@ def run_single_experiment(scenario_name, scenario_path, planner_name, planner_co
     }
 
 
-def run_experiments(config, scenarios=None, planners=None, resume=False, verbose=False):
+def run_experiments(config, scenarios=None, planners=None, resume=False, verbose=False, overwrite=False):
     """
     Run all experiments with adaptive scaling.
 
@@ -448,7 +448,8 @@ def run_experiments(config, scenarios=None, planners=None, resume=False, verbose
                     result = run_single_experiment(
                         scenario_name, scenario_path,
                         planner_name, planner_config,
-                        num_robots, seed, config, base_dir, verbose
+                        num_robots, seed, config, base_dir, verbose,
+                        overwrite=overwrite
                     )
 
                     summary.append(result)
@@ -526,6 +527,8 @@ def main():
                        help='Override timeout (seconds)')
     parser.add_argument('--resume', action='store_true',
                        help='Resume from previous run (skip existing results)')
+    parser.add_argument('--overwrite', action='store_true',
+                       help='Overwrite existing result files instead of using cached results')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Print detailed failure information and save logs')
 
@@ -546,7 +549,8 @@ def main():
         scenarios=args.scenarios,
         planners=args.planners,
         resume=args.resume,
-        verbose=args.verbose
+        verbose=args.verbose,
+        overwrite=args.overwrite
     )
 
 
