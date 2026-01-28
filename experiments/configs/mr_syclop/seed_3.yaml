@@ -2,6 +2,26 @@ seed: 3
 decomposition_region_length: 5
 segment_timesteps: 30
 mapf: {method: cbs, region_capacity: 2, max_obstacle_volume_percent: 0.5}
-guided_planner: {time_per_robot: 10.0, goal_threshold: 0.5, num_free_volume_samples: 100000,
-  num_region_expansions: 100, num_tree_expansions: 1, prob_abandon_lead_early: 0.25,
-  prob_shortest_path: 0.95, use_regional_nn: true, debug: false}
+guided_planner:
+  time_per_robot: 10.0
+  goal_threshold: 0.5
+  num_free_volume_samples: 100000
+  num_region_expansions: 100
+  num_tree_expansions: 1
+  prob_abandon_lead_early: 0.25
+  prob_shortest_path: 0.95
+  use_regional_nn: true
+  debug: false
+  composite_dbrrt:
+    time_limit: 120.0
+    delta: 0.3
+    goal_region: 0.5
+    max_motions: 1000
+    expansions_per_iter: 5
+    goal_threshold: 0.5
+    goal_bias: 0.1
+    require_all_move: false
+    models_base_path: ../db-CBS/dynoplan/dynobench/models
+    seed: -1
+    debug: false
+    motion_files: {unicycle_first_order_0_sphere: ../db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack}

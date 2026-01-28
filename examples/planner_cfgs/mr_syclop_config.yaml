@@ -27,3 +27,32 @@ guided_planner:
   prob_shortest_path: 0.95
   use_regional_nn: true
   debug: false
+
+  # Composite DB-RRT configuration (used for collision resolution)
+  composite_dbrrt:
+    # Time limit for planning (seconds)
+    time_limit: 120.0
+
+    # Per-robot DB-RRT parameters
+    delta: 0.3                # Motion primitive search radius
+    goal_region: 0.5          # Goal threshold for individual robots
+    max_motions: 1000         # Max primitives to load per robot
+
+    # Composite search parameters
+    expansions_per_iter: 5    # Expansions per iteration
+    goal_threshold: 0.5       # Per-robot goal check threshold
+    goal_bias: 0.1            # Goal bias for sampling
+    require_all_move: false   # If true, all robots must move in each expansion
+
+    # Path to dynobench models directory
+    models_base_path: "../db-CBS/dynoplan/dynobench/models"
+
+    # Random seed (-1 for random)
+    seed: -1
+
+    # Debug output
+    debug: false
+
+    # Motion primitive files per robot type
+    motion_files:
+      unicycle_first_order_0_sphere: "../db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
