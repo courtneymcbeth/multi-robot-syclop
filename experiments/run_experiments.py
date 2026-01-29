@@ -8,6 +8,7 @@ Features:
 - Timeout handling
 - Resume capability
 - Progress logging
+- Verbose mode with detailed failure diagnostics
 
 Usage:
     # Run all experiments defined in config
@@ -21,6 +22,10 @@ Usage:
 
     # Resume from previous run
     python run_experiments.py --resume
+
+    # Verbose mode: show detailed failure info and save logs
+    python run_experiments.py --verbose
+    python run_experiments.py -v
 """
 
 import yaml
@@ -213,12 +218,12 @@ def create_config_with_seed(base_config_path, seed, output_path):
     return output_path
 
 
-def run_planner(executable, problem_file, output_file, config_file, timeout):
+def run_planner(executable, problem_file, output_file, config_file, timeout, log_dir=None):
     """
     Run a planner executable and return the result.
 
     Returns:
-        dict with keys: solved, planning_time, timed_out, error
+        dict with keys: solved, planning_time, timed_out, error, failure_reason, stdout, stderr
     """
     cmd = [
         executable,
@@ -232,7 +237,10 @@ def run_planner(executable, problem_file, output_file, config_file, timeout):
         'solved': False,
         'planning_time': timeout,
         'timed_out': False,
-        'error': None
+        'error': None,
+        'failure_reason': None,
+        'stdout': '',
+        'stderr': ''
     }
 
     try:
@@ -243,18 +251,39 @@ def run_planner(executable, problem_file, output_file, config_file, timeout):
             text=True
         )
 
+        result['stdout'] = proc.stdout
+        result['stderr'] = proc.stderr
+
+        # Save logs if log directory provided
+        if log_dir:
+            log_dir = Path(log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            stdout_file = log_dir / f"{Path(output_file).stem}_stdout.txt"
+            stderr_file = log_dir / f"{Path(output_file).stem}_stderr.txt"
+
+            with open(stdout_file, 'w') as f:
+                f.write(proc.stdout)
+            with open(stderr_file, 'w') as f:
+                f.write(proc.stderr)
+
         # Parse output file
         if Path(output_file).exists():
             with open(output_file, 'r') as f:
                 output = yaml.safe_load(f)
                 result['solved'] = output.get('solved', output.get('success', False))
                 result['planning_time'] = output.get('planning_time', timeout)
+                result['failure_reason'] = output.get('failure_reason', output.get('error'))
         else:
             result['error'] = 'No output file generated'
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         result['timed_out'] = True
         result['error'] = 'Process timed out'
+        if e.stdout:
+            result['stdout'] = e.stdout.decode() if isinstance(e.stdout, bytes) else e.stdout
+        if e.stderr:
+            result['stderr'] = e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr
     except Exception as e:
         result['error'] = str(e)
 
@@ -262,19 +291,20 @@ def run_planner(executable, problem_file, output_file, config_file, timeout):
 
 
 def run_single_experiment(scenario_name, scenario_path, planner_name, planner_config,
-                         num_robots, seed, config, base_dir):
+                         num_robots, seed, config, base_dir, verbose=False, overwrite=False):
     """Run a single experiment (one scenario, one planner, one robot count, one seed)."""
     # Paths
     problems_dir = base_dir / 'problems' / scenario_name / f'robots_{num_robots}'
     results_dir = base_dir / 'results' / scenario_name / planner_name / f'robots_{num_robots}'
     configs_dir = base_dir / 'configs' / planner_name
+    logs_dir = base_dir / 'logs' / scenario_name / planner_name / f'robots_{num_robots}'
 
     problem_file = problems_dir / f'seed_{seed}.yaml'
     result_file = results_dir / f'seed_{seed}.yaml'
     config_file = configs_dir / f'seed_{seed}.yaml'
 
     # Skip if result already exists (resume support) and config hasn't changed
-    if result_file.exists():
+    if result_file.exists() and not overwrite:
         with open(result_file, 'r') as f:
             existing = yaml.safe_load(f)
             # Check if planner config has changed by comparing hashes
@@ -310,12 +340,14 @@ def run_single_experiment(scenario_name, scenario_path, planner_name, planner_co
 
     # Run planner
     timeout = config.get('timeout', 300)
+    log_dir = logs_dir if verbose else None
     result = run_planner(
         planner_config['executable'],
         problem_file,
         result_file,
         config_file,
-        timeout
+        timeout,
+        log_dir=log_dir
     )
 
     # Add config hash to result for future cache validation
@@ -340,11 +372,14 @@ def run_single_experiment(scenario_name, scenario_path, planner_name, planner_co
         'planning_time': result['planning_time'],
         'timed_out': result.get('timed_out', False),
         'error': result.get('error'),
+        'failure_reason': result.get('failure_reason'),
+        'stdout': result.get('stdout', ''),
+        'stderr': result.get('stderr', ''),
         'skipped': False
     }
 
 
-def run_experiments(config, scenarios=None, planners=None, resume=False):
+def run_experiments(config, scenarios=None, planners=None, resume=False, verbose=False, overwrite=False):
     """
     Run all experiments with adaptive scaling.
 
@@ -353,6 +388,9 @@ def run_experiments(config, scenarios=None, planners=None, resume=False):
     2. Run all seeds
     3. If any seed succeeds, increment robot count
     4. If all seeds fail, stop testing this pair
+
+    Args:
+        verbose: If True, print detailed failure information and save logs
     """
     base_dir = Path(config.get('base_dir', '.'))
     num_seeds = config.get('num_seeds', 10)
@@ -410,7 +448,8 @@ def run_experiments(config, scenarios=None, planners=None, resume=False):
                     result = run_single_experiment(
                         scenario_name, scenario_path,
                         planner_name, planner_config,
-                        num_robots, seed, config, base_dir
+                        num_robots, seed, config, base_dir, verbose,
+                        overwrite=overwrite
                     )
 
                     summary.append(result)
@@ -426,6 +465,18 @@ def run_experiments(config, scenarios=None, planners=None, resume=False):
                         status += " (cached)"
 
                     log(f"    Seed {seed}: {status} ({result['planning_time']:.2f}s)")
+
+                    # Print detailed failure info in verbose mode
+                    if verbose and not result['solved'] and not result.get('skipped'):
+                        if result.get('failure_reason'):
+                            log(f"      Failure reason: {result['failure_reason']}")
+                        if result.get('error'):
+                            log(f"      Error: {result['error']}")
+                        if result.get('stderr') and result['stderr'].strip():
+                            log(f"      stderr: {result['stderr'][:200]}...")  # First 200 chars
+                        log_path = base_dir / 'logs' / scenario_name / planner_name / f'robots_{num_robots}'
+                        if log_path.exists():
+                            log(f"      Full logs: {log_path}/seed_{seed}_*.txt")
 
                 success_rate = successes / num_seeds
                 log(f"  Results: {successes}/{num_seeds} solved ({success_rate:.1%})")
@@ -476,6 +527,10 @@ def main():
                        help='Override timeout (seconds)')
     parser.add_argument('--resume', action='store_true',
                        help='Resume from previous run (skip existing results)')
+    parser.add_argument('--overwrite', action='store_true',
+                       help='Overwrite existing result files instead of using cached results')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Print detailed failure information and save logs')
 
     args = parser.parse_args()
 
@@ -493,7 +548,9 @@ def main():
         config,
         scenarios=args.scenarios,
         planners=args.planners,
-        resume=args.resume
+        resume=args.resume,
+        verbose=args.verbose,
+        overwrite=args.overwrite
     )
 
 

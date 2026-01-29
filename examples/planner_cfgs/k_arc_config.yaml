@@ -1,0 +1,62 @@
+# K-ARC: Kinodynamic Adaptive Robot Coordination Configuration
+#
+# This configuration controls the K-ARC planner which extends ARC to handle
+# kinodynamic constraints through segment-based iterative solution construction.
+
+# Segmentation
+num_segments: 4                    # Number of segments per robot path (m in the paper)
+
+# Initial kinematic planning (Phase 1: RRTConnect per robot)
+initial_planning_time: 10.0        # Total time budget for initial kinematic paths (seconds)
+goal_threshold: 0.5                # Goal tolerance for RRTConnect
+
+# Per-segment kinodynamic planning (Phase 3: DB-RRT per robot per segment)
+segment_planning_time: 5.0         # Time budget per segment per robot (seconds)
+
+# Waypoint tolerances
+waypoint_tolerance: 0.5            # Tolerance for intermediate segment goals
+final_goal_tolerance: 0.3          # Tolerance for final goal
+
+# Conflict resolution (Phase 5: Algorithm 2)
+max_solver_escalations: 3          # Max times to expand subproblem boundaries
+prioritized_timeout: 5.0           # Level 1: Prioritized DB-RRT timeout (seconds)
+composite_timeout: 30.0            # Level 2: Composite DB-RRT timeout (seconds)
+
+# General
+total_time_limit: 300.0            # Total planning time limit (seconds)
+models_base_path: "db-CBS/dynoplan/dynobench/models/"
+motions_file: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+seed: -1                           # Random seed (-1 for random)
+debug: false
+
+# DB-RRT configuration (for per-segment kinodynamic planning)
+db_rrt:
+  motions_file: ""                 # Empty = use top-level motions_file
+  models_base_path: ""             # Empty = use top-level models_base_path
+  timelimit: 5.0                   # Per-segment time limit
+  max_expands: 10000               # Maximum tree expansions
+  goal_region: 0.5                 # Goal region radius (overridden per segment)
+  delta: 1.0                       # NN search radius in canonical space
+  goal_bias: 0.2                   # Probability of sampling goal
+  max_motions: 1000                # Maximum motion primitives to load
+  seed: -1
+  do_optimization: false           # Optimization for intermediate segments
+  use_nigh_nn: true
+  debug: false
+  solver_id: 0
+
+# Composite DB-RRT configuration (for joint multi-robot conflict resolution)
+composite_dbrrt:
+  time_limit: 30.0                 # Time limit for composite planning
+  delta: 0.3                       # Motion primitive search radius
+  goal_region: 0.5                 # Goal threshold for individual robots
+  max_motions: 1000
+  expansions_per_iter: 5
+  goal_threshold: 0.5
+  goal_bias: 0.1
+  require_all_move: false
+  models_base_path: "db-CBS/dynoplan/dynobench/models/"
+  seed: -1
+  debug: false
+  motion_files:
+    unicycle_first_order_0_sphere: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"

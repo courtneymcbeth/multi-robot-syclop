@@ -2,6 +2,7 @@
 """
 Interactive visualization script for Multi-Robot SyCLoP solutions with slider control
 Features: slider for seeking through the animation timeline
+Supports: mr_syclop format and dynobench/DB-RRT format
 Requires: matplotlib, pyyaml
 Install: pip install matplotlib pyyaml
 """
@@ -10,11 +11,19 @@ import bisect
 import yaml
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.collections import LineCollection
 from matplotlib.widgets import Slider, Button
 import numpy as np
 import argparse
 import sys
 import time
+import os
+
+# Default path to dynobench models (relative to this script or absolute)
+DEFAULT_MODELS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'db-CBS', 'dynoplan', 'dynobench', 'models'
+)
 
 DEFAULT_GEOMETRIES = {
     'single_integrator_0': [('sphere', 0.1)],
@@ -29,17 +38,332 @@ DEFAULT_GEOMETRIES = {
     ],
 }
 
-def load_yaml(filename):
+def load_yaml(filename, exit_on_error=True):
     """Load YAML file"""
     try:
         with open(filename, 'r') as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"Error: File '{filename}' not found")
-        sys.exit(1)
+        if exit_on_error:
+            print(f"Error: File '{filename}' not found")
+            sys.exit(1)
+        return None
     except yaml.YAMLError as e:
-        print(f"Error parsing YAML: {e}")
-        sys.exit(1)
+        if exit_on_error:
+            print(f"Error parsing YAML: {e}")
+            sys.exit(1)
+        return None
+
+
+def load_robot_model(robot_type, models_path=None):
+    """Load robot geometry from dynobench model file.
+
+    Args:
+        robot_type: Robot type string (e.g., 'unicycle_first_order_0')
+        models_path: Path to dynobench models directory
+
+    Returns:
+        dict with 'shape', 'size', 'radius' fields, or None if not found
+    """
+    if models_path is None:
+        models_path = DEFAULT_MODELS_PATH
+
+    model_file = os.path.join(models_path, f'{robot_type}.yaml')
+    model = load_yaml(model_file, exit_on_error=False)
+
+    if model is None:
+        return None
+
+    return {
+        'shape': model.get('shape', 'sphere'),
+        'size': model.get('size', [0.5, 0.25]),
+        'radius': model.get('radius', None),
+    }
+
+
+def detect_config_format(config):
+    """Detect whether config is in mr_syclop or s2m2/DB-RRT format.
+
+    Returns: 'mr_syclop', 's2m2', or 'unknown'
+    """
+    # s2m2/DB-RRT format has 'agents' and 'limits'
+    if 'agents' in config and 'limits' in config:
+        return 's2m2'
+    # mr_syclop format has 'environment' and 'robots'
+    if 'environment' in config or 'robots' in config:
+        return 'mr_syclop'
+    return 'unknown'
+
+
+def halfplanes_to_box(halfplanes):
+    """Convert a list of half-plane constraints to a bounding box.
+
+    Each half-plane is [normal_x, normal_y, offset] defining constraint:
+    normal_x * x + normal_y * y <= offset
+
+    Returns: (center_x, center_y, width, height) or None if invalid
+    """
+    # Extract bounds from half-planes
+    x_min, x_max = float('-inf'), float('inf')
+    y_min, y_max = float('-inf'), float('inf')
+
+    for hp in halfplanes:
+        if len(hp) < 3:
+            continue
+        nx, ny, d = hp[0], hp[1], hp[2]
+
+        # Normalize to identify axis-aligned planes
+        if abs(ny) < 1e-6:  # Vertical plane (x constraint)
+            if nx > 0:  # x <= d/nx
+                x_max = min(x_max, d / nx)
+            else:  # x >= d/nx (since nx < 0: nx*x <= d means x >= d/nx)
+                x_min = max(x_min, d / nx)
+        elif abs(nx) < 1e-6:  # Horizontal plane (y constraint)
+            if ny > 0:  # y <= d/ny
+                y_max = min(y_max, d / ny)
+            else:  # y >= d/ny
+                y_min = max(y_min, d / ny)
+
+    # Check for valid box
+    if x_min == float('-inf') or x_max == float('inf'):
+        return None
+    if y_min == float('-inf') or y_max == float('inf'):
+        return None
+    if x_min >= x_max or y_min >= y_max:
+        return None
+
+    center_x = (x_min + x_max) / 2
+    center_y = (y_min + y_max) / 2
+    width = x_max - x_min
+    height = y_max - y_min
+
+    return (center_x, center_y, width, height)
+
+
+def convert_s2m2_to_mrsyclop(config, models_path=None):
+    """Convert s2m2/DB-RRT config format to mr_syclop format.
+
+    Args:
+        config: s2m2 format config dict
+        models_path: Optional path to dynobench models
+
+    Returns:
+        mr_syclop format config dict
+    """
+    env = {'environment': {}, 'robots': []}
+
+    # Convert limits to environment bounds
+    limits = config.get('limits', [[0, 10], [0, 10]])
+    env['environment']['min'] = [limits[0][0], limits[1][0]]
+    env['environment']['max'] = [limits[0][1], limits[1][1]]
+
+    # Convert obstacles from half-planes to boxes
+    env['environment']['obstacles'] = []
+    for obs_halfplanes in config.get('obstacles', []):
+        box = halfplanes_to_box(obs_halfplanes)
+        if box is not None:
+            center_x, center_y, width, height = box
+            env['environment']['obstacles'].append({
+                'type': 'box',
+                'center': [center_x, center_y],
+                'size': [width, height],
+            })
+
+    # Convert agents to robots
+    agents = config.get('agents', [])
+    starts = config.get('starts', [])
+    goals = config.get('goals', [])
+
+    for i, agent in enumerate(agents):
+        robot_type = agent.get('type', 'unicycle_first_order_0')
+        agent_size = agent.get('size', None)
+
+        # Try to load model for geometry
+        model = load_robot_model(robot_type, models_path)
+
+        robot_config = {
+            'type': robot_type,
+            'name': f'Robot {i}',
+        }
+
+        # Determine radius from: agent.size > model.radius > model.size > default
+        if agent_size is not None:
+            robot_config['radius'] = agent_size
+        elif model is not None:
+            if model['radius'] is not None:
+                robot_config['radius'] = model['radius']
+            elif model['shape'] == 'sphere' and model['size']:
+                robot_config['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
+            elif model['shape'] == 'box' and model['size']:
+                # Use half-diagonal as effective radius for collision
+                w, h = model['size'][0], model['size'][1]
+                robot_config['radius'] = 0.5 * np.hypot(w, h)
+                robot_config['box_size'] = model['size']
+            robot_config['shape'] = model['shape']
+
+        # Get start position
+        if i < len(starts):
+            start = starts[i]
+            robot_config['start'] = list(start) + [0.0] * (3 - len(start))
+        else:
+            robot_config['start'] = [0.0, 0.0, 0.0]
+
+        # Get goal position (goals is a list of goal configurations per robot)
+        # Each goal config is a list of half-planes; extract center point
+        if i < len(goals) and goals[i]:
+            # Goals are half-planes, convert to point
+            goal_box = halfplanes_to_box(goals[i])
+            if goal_box is not None:
+                robot_config['goal'] = [goal_box[0], goal_box[1], 0.0]
+            else:
+                robot_config['goal'] = [1.0, 1.0, 0.0]
+        else:
+            robot_config['goal'] = [1.0, 1.0, 0.0]
+
+        env['robots'].append(robot_config)
+
+    return env
+
+
+def detect_format(solution):
+    """Detect whether solution is in mr_syclop or dynobench/DB-RRT format.
+
+    Returns: 'mr_syclop' or 'dbrrt'
+    """
+    # DB-RRT format has 'solved' field (integer 0/1)
+    if 'solved' in solution:
+        return 'dbrrt'
+    # mr_syclop format has 'success' field (boolean)
+    if 'success' in solution:
+        return 'mr_syclop'
+    # Fallback: if result exists, assume mr_syclop
+    if 'result' in solution:
+        return 'mr_syclop'
+    return 'unknown'
+
+
+def extract_paths_from_solution(solution):
+    """Extract paths from solution regardless of format.
+
+    Returns: list of paths, where each path is a list of [x, y, ...] states
+    """
+    paths = []
+
+    if 'result' not in solution:
+        return paths
+
+    result = solution['result']
+
+    # Handle list of robot trajectories
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and 'states' in item:
+                # Format: [{states: [...]}, {states: [...]}]
+                paths.append(item['states'])
+            elif isinstance(item, list):
+                # Format: [[[x,y,theta], ...], [[x,y,theta], ...]]
+                # This could be a single trajectory as list of states
+                if item and isinstance(item[0], (list, tuple)) and len(item[0]) >= 2:
+                    paths.append(item)
+    elif isinstance(result, dict) and 'states' in result:
+        # Single robot: {states: [...]}
+        paths.append(result['states'])
+
+    return paths
+
+
+def compute_bounds_from_paths(paths, margin=1.0):
+    """Compute environment bounds from trajectory data.
+
+    Returns: (env_min, env_max) as [x, y] lists
+    """
+    if not paths:
+        return [0.0, 0.0], [10.0, 10.0]
+
+    all_x = []
+    all_y = []
+
+    for path in paths:
+        for state in path:
+            if len(state) >= 2:
+                all_x.append(state[0])
+                all_y.append(state[1])
+
+    if not all_x:
+        return [0.0, 0.0], [10.0, 10.0]
+
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+
+    # Add margin
+    env_min = [min_x - margin, min_y - margin]
+    env_max = [max_x + margin, max_y + margin]
+
+    return env_min, env_max
+
+
+def create_synthetic_env(solution, paths, models_path=None):
+    """Create a synthetic environment dict from DB-RRT solution data.
+
+    This allows visualization without a separate environment file.
+    Uses dynobench model files when available for accurate robot geometry.
+    """
+    env = {'environment': {}, 'robots': []}
+
+    # Compute bounds from trajectories
+    env_min, env_max = compute_bounds_from_paths(paths, margin=1.0)
+    env['environment']['min'] = env_min
+    env['environment']['max'] = env_max
+    env['environment']['obstacles'] = []
+
+    # Extract start/goal from solution if available, otherwise from paths
+    start = solution.get('start', None)
+    goal = solution.get('goal', None)
+    robot_type = solution.get('robotType', 'unicycle_first_order_0_sphere')
+
+    # Try to load robot model for geometry
+    model = load_robot_model(robot_type, models_path)
+
+    for i, path in enumerate(paths):
+        robot_config = {
+            'type': robot_type,
+            'name': f'Robot {i}',
+        }
+
+        # Determine radius from model or use default
+        if model is not None:
+            if model['radius'] is not None:
+                robot_config['radius'] = model['radius']
+            elif model['shape'] == 'sphere' and model['size']:
+                robot_config['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
+            elif model['shape'] == 'box' and model['size']:
+                w, h = model['size'][0], model['size'][1]
+                robot_config['radius'] = 0.5 * np.hypot(w, h)
+                robot_config['box_size'] = model['size']
+            robot_config['shape'] = model['shape']
+        else:
+            # Fallback to DEFAULT_GEOMETRIES or hardcoded default
+            robot_config['radius'] = 0.3
+
+        # Get start from solution or first path state
+        if start is not None and len(start) >= 2:
+            robot_config['start'] = list(start)
+        elif path and len(path[0]) >= 2:
+            robot_config['start'] = list(path[0])
+        else:
+            robot_config['start'] = [0.0, 0.0, 0.0]
+
+        # Get goal from solution or last path state
+        if goal is not None and len(goal) >= 2:
+            robot_config['goal'] = list(goal)
+        elif path and len(path[-1]) >= 2:
+            robot_config['goal'] = list(path[-1])
+        else:
+            robot_config['goal'] = [1.0, 1.0, 0.0]
+
+        env['robots'].append(robot_config)
+
+    return env
 
 def get_robot_radius(robot_config):
     if 'radius' in robot_config:
@@ -156,28 +480,108 @@ def trail_points(path, waypoint_times, t):
                 ys.append(interp_y)
     return xs, ys
 
-def interactive_animation(env_file, solution_file, initial_speed=1.0):
-    """Create an interactive visualization with a slider control"""
+def load_solution_and_env(solution_file, env_file=None, config_file=None,
+                         models_path=None, planner_config_file=None):
+    """Load solution, environment, and planner config from files.
 
-    # Load environment and solution
-    env = load_yaml(env_file)
+    Returns: (solution, paths, env, planner_config) or None on failure.
+    """
     solution = load_yaml(solution_file)
 
     if not solution or 'result' not in solution:
         print("Warning: No solution found in file")
+        return None
+
+    fmt = detect_format(solution)
+    print(f"Detected solution format: {fmt}")
+
+    planner_config = None
+    if planner_config_file:
+        planner_config = load_yaml(planner_config_file, exit_on_error=False)
+        if planner_config:
+            print(f"Loaded planner config: {planner_config_file}")
+
+    paths = extract_paths_from_solution(solution)
+
+    if not paths:
+        print("Warning: No valid paths found in solution")
+        return None
+
+    env = None
+
+    if config_file:
+        config = load_yaml(config_file)
+        config_fmt = detect_config_format(config)
+        print(f"Loaded config file (format: {config_fmt}): {config_file}")
+
+        if config_fmt == 's2m2':
+            env = convert_s2m2_to_mrsyclop(config, models_path)
+        elif config_fmt == 'mr_syclop':
+            env = config
+            for robot in env.get('robots', []):
+                if 'radius' not in robot:
+                    robot_type = robot.get('type', '')
+                    model = load_robot_model(robot_type, models_path)
+                    if model is not None:
+                        if model['radius'] is not None:
+                            robot['radius'] = model['radius']
+                        elif model['shape'] == 'sphere' and model['size']:
+                            robot['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
+                        elif model['shape'] == 'box' and model['size']:
+                            w, h = model['size'][0], model['size'][1]
+                            robot['radius'] = 0.5 * np.hypot(w, h)
+                            robot['box_size'] = model['size']
+                        robot['shape'] = model['shape']
+
+    if env is None and env_file:
+        env = load_yaml(env_file)
+        for robot in env.get('robots', []):
+            if 'radius' not in robot:
+                robot_type = robot.get('type', '')
+                model = load_robot_model(robot_type, models_path)
+                if model is not None:
+                    if model['radius'] is not None:
+                        robot['radius'] = model['radius']
+                    elif model['shape'] == 'sphere' and model['size']:
+                        robot['radius'] = model['size'][0] if isinstance(model['size'], list) else model['size']
+                    elif model['shape'] == 'box' and model['size']:
+                        w, h = model['size'][0], model['size'][1]
+                        robot['radius'] = 0.5 * np.hypot(w, h)
+                        robot['box_size'] = model['size']
+                    robot['shape'] = model['shape']
+
+    if env is None:
+        print("No environment/config file provided, inferring from solution...")
+        env = create_synthetic_env(solution, paths, models_path)
+
+    return solution, paths, env, planner_config
+
+
+def interactive_animation(env_file, solution_file, initial_speed=1.0, config_file=None,
+                          models_path=None, show_high_level=True, show_grid=True,
+                          planner_config_file=None):
+    """Create an interactive visualization with a slider control
+
+    Args:
+        env_file: Path to environment YAML file (optional, can be None for DB-RRT format)
+        solution_file: Path to solution YAML file
+        initial_speed: Robot speed in map units per second
+        config_file: Path to problem config file (s2m2 or mr_syclop format)
+        models_path: Path to dynobench models directory
+        show_high_level: Whether to display high-level paths through regions
+        show_grid: Whether to display decomposition grid lines
+        planner_config_file: Path to planner config file (for decomposition.resolution)
+    """
+
+    loaded = load_solution_and_env(solution_file, env_file, config_file,
+                                   models_path, planner_config_file)
+    if loaded is None:
         return
+    solution, paths, env, planner_config = loaded
 
     # Extract environment bounds
     env_min = env['environment']['min']
     env_max = env['environment']['max']
-
-    # Extract all paths
-    paths = []
-    for robot_idx, path_data in enumerate(solution['result']):
-        if 'states' in path_data and path_data['states']:
-            paths.append(path_data['states'])
-        else:
-            paths.append([])
 
     if initial_speed <= 0.0:
         initial_speed = 1.0
@@ -195,10 +599,12 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0):
         return
 
     # Create figure with space for slider at the bottom
-    fig = plt.figure(figsize=(12, 10))
+    fig_w, fig_h = compute_fig_size(env_min, env_max, max_dim=8)
+    fig = plt.figure(figsize=(fig_w, fig_h + 2))  # extra height for slider/buttons
 
     # Main plot area
-    ax = plt.axes([0.1, 0.2, 0.8, 0.7])
+    plot_bottom = 2.0 / (fig_h + 2)  # reserve ~2 inches at bottom
+    ax = plt.axes([0.1, plot_bottom + 0.05, 0.8, 0.90 - plot_bottom])
     ax.set_xlim(env_min[0], env_max[0])
     ax.set_ylim(env_min[1], env_max[1])
     ax.set_aspect('equal')
@@ -207,46 +613,8 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0):
     ax.set_title('Multi-Robot SyCLoP Interactive Visualization')
 
     draw_obstacles(ax, env)
-
-    # Draw regions if decomposition data is available
-    if 'decomposition' in solution:
-        decomp = solution['decomposition']
-        if decomp.get('type') == 'grid':
-            grid_size = decomp['grid_size']
-            bounds_min = decomp['bounds']['min']
-            bounds_max = decomp['bounds']['max']
-
-            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
-            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
-
-            def get_region_bounds(region_id):
-                row = region_id // grid_size[0]
-                col = region_id % grid_size[0]
-                x = bounds_min[0] + col * cell_width
-                y = bounds_min[1] + row * cell_height
-                return x, y, cell_width, cell_height
-
-            if 'leads' in decomp and decomp['leads']:
-                colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
-                for robot_idx, lead in enumerate(decomp['leads']):
-                    if lead:
-                        color = colors[robot_idx]
-                        for region_id in lead:
-                            x, y, w, h = get_region_bounds(region_id)
-                            rect = patches.Rectangle((x, y), w, h,
-                                                    linewidth=0,
-                                                    facecolor=color,
-                                                    alpha=0.15,
-                                                    zorder=0)
-                            ax.add_patch(rect)
-
-            for i in range(grid_size[0] + 1):
-                x = bounds_min[0] + i * cell_width
-                ax.axvline(x, color='darkgray', linewidth=1.5, alpha=0.6, linestyle='-')
-
-            for j in range(grid_size[1] + 1):
-                y = bounds_min[1] + j * cell_height
-                ax.axhline(y, color='darkgray', linewidth=1.5, alpha=0.6, linestyle='-')
+    draw_decomposition(ax, solution, env, planner_config,
+                       show_grid=show_grid, show_high_level=show_high_level)
 
     colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
 
@@ -388,18 +756,381 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0):
 
     plt.show()
 
+def _draw_refined_children(ax, children, parent_x, parent_y, parent_w, parent_h, depth=1):
+    """Recursively draw refined sub-cells within a parent cell.
+
+    Args:
+        ax: matplotlib axes
+        children: list of child IDs (leaf ints or nested [id, [children...]])
+        parent_x, parent_y: bottom-left corner of parent cell
+        parent_w, parent_h: size of parent cell
+        depth: current refinement depth
+    """
+    num_children = len(children)
+    child_grid_len = int(np.ceil(np.sqrt(num_children)))
+    child_w = parent_w / child_grid_len
+    child_h = parent_h / child_grid_len
+
+    sub_cmap = plt.cm.Pastel1
+
+    for i, child in enumerate(children):
+        col = i % child_grid_len
+        row = i // child_grid_len
+        cx = parent_x + col * child_w
+        cy = parent_y + row * child_h
+
+        if isinstance(child, int):
+            # Leaf sub-cell
+            color = sub_cmap(i / max(num_children, 1))
+            rect = patches.Rectangle(
+                (cx, cy), child_w, child_h,
+                facecolor=color, edgecolor='darkorange',
+                linewidth=1.5, alpha=0.6, zorder=3 + depth)
+            ax.add_patch(rect)
+        elif isinstance(child, list) and len(child) >= 2:
+            # Nested refinement
+            nested_children = child[1]
+            if isinstance(nested_children, list):
+                _draw_refined_children(ax, nested_children, cx, cy, child_w, child_h, depth + 1)
+
+
+def draw_decomposition(ax, solution, env, planner_config, show_grid=True, show_high_level=True):
+    """Draw decomposition grid, hierarchy refinements, and high-level paths.
+
+    Args:
+        ax: matplotlib axes
+        solution: solution dict (may contain 'decomposition')
+        env: environment dict with 'robots' list
+        planner_config: planner config dict (may contain 'decomposition.resolution')
+        show_grid: whether to draw grid lines
+        show_high_level: whether to draw high-level paths through regions
+    """
+    env_min = env['environment']['min']
+    env_max = env['environment']['max']
+
+    decomp = None
+    grid_size = None
+    bounds_min = None
+    bounds_max = None
+    cell_width = None
+    cell_height = None
+
+    if planner_config and 'decomposition' in planner_config:
+        planner_decomp = planner_config['decomposition']
+        if planner_decomp.get('type') == 'grid' and 'resolution' in planner_decomp:
+            resolution = planner_decomp['resolution']
+            grid_size = [resolution[0], resolution[1]]
+            bounds_min = env_min
+            bounds_max = env_max
+            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
+            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
+            if 'decomposition' in solution and 'leads' in solution['decomposition']:
+                decomp = {'type': 'grid', 'leads': solution['decomposition']['leads']}
+            else:
+                decomp = {'type': 'grid'}
+            # Pull in hierarchy if available
+            if 'decomposition' in solution and 'hierarchy' in solution['decomposition']:
+                decomp['hierarchy'] = solution['decomposition']['hierarchy']
+    elif 'decomposition' in solution:
+        decomp = solution['decomposition']
+        if decomp.get('type') == 'grid':
+            grid_size = decomp['grid_size']
+            bounds_min = decomp['bounds']['min']
+            bounds_max = decomp['bounds']['max']
+            cell_width = (bounds_max[0] - bounds_min[0]) / grid_size[0]
+            cell_height = (bounds_max[1] - bounds_min[1]) / grid_size[1]
+
+    if not (decomp and decomp.get('type') == 'grid' and grid_size and (show_high_level or show_grid)):
+        return
+
+    grid_length = grid_size[0]
+
+    def get_region_bounds(region_id):
+        x_index = region_id // grid_length
+        y_index = region_id % grid_length
+        x = bounds_min[0] + x_index * cell_width
+        y = bounds_min[1] + y_index * cell_height
+        return x, y, cell_width, cell_height
+
+    def get_region_center(region_id):
+        x, y, w, h = get_region_bounds(region_id)
+        return x + w / 2, y + h / 2
+
+    # Draw grid lines
+    if show_grid:
+        for i in range(grid_size[0] + 1):
+            x = bounds_min[0] + i * cell_width
+            ax.axvline(x, color='darkgray', linewidth=1.0, alpha=0.4, linestyle='-', zorder=0)
+        for j in range(grid_size[1] + 1):
+            y = bounds_min[1] + j * cell_height
+            ax.axhline(y, color='darkgray', linewidth=1.0, alpha=0.4, linestyle='-', zorder=0)
+
+    # Draw hierarchy with refinements (like visualize_decomposition.py)
+    hierarchy = decomp.get('hierarchy', [])
+    if show_grid and hierarchy:
+        depth_cmap = plt.cm.coolwarm
+        for cell in hierarchy:
+            if isinstance(cell, int):
+                # Unrefined leaf cell — light fill
+                rx, ry, rw, rh = get_region_bounds(cell)
+                color = depth_cmap(0.0)
+                rect = patches.Rectangle(
+                    (rx, ry), rw, rh,
+                    facecolor=color, edgecolor='black',
+                    linewidth=1.0, alpha=0.15, zorder=1)
+                ax.add_patch(rect)
+            elif isinstance(cell, list) and len(cell) >= 2:
+                # Refined cell: [parent_id, [children...]]
+                parent_id = cell[0]
+                children = cell[1]
+                rx, ry, rw, rh = get_region_bounds(parent_id)
+
+                # Highlight refined region background
+                rect_fill = patches.Rectangle(
+                    (rx, ry), rw, rh,
+                    facecolor='#FFFFCC', edgecolor='none',
+                    alpha=0.4, zorder=1)
+                ax.add_patch(rect_fill)
+                # Dashed outline for refined parent
+                rect_border = patches.Rectangle(
+                    (rx, ry), rw, rh,
+                    facecolor='none', edgecolor='darkorange',
+                    linewidth=2.0, linestyle='--', alpha=0.8, zorder=4)
+                ax.add_patch(rect_border)
+
+                # Draw sub-cells
+                if isinstance(children, list):
+                    _draw_refined_children(ax, children, rx, ry, rw, rh, depth=1)
+
+    # Draw high-level paths (leads)
+    if show_high_level and 'leads' in decomp and decomp['leads']:
+        colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
+        for robot_idx, lead in enumerate(decomp['leads']):
+            if lead:
+                color = colors[robot_idx]
+                for region_id in lead:
+                    x, y, w, h = get_region_bounds(region_id)
+                    rect = patches.Rectangle((x, y), w, h,
+                                            linewidth=0,
+                                            facecolor=color,
+                                            alpha=0.12,
+                                            zorder=0)
+                    ax.add_patch(rect)
+                if len(lead) >= 2:
+                    path_x = []
+                    path_y = []
+                    for region_id in lead:
+                        cx, cy = get_region_center(region_id)
+                        path_x.append(cx)
+                        path_y.append(cy)
+                    ax.plot(path_x, path_y, '--',
+                            color=color, linewidth=2.5, alpha=0.7,
+                            zorder=2, marker='s', markersize=6,
+                            markerfacecolor=color, markeredgecolor='black',
+                            markeredgewidth=1)
+                    start_cx, start_cy = get_region_center(lead[0])
+                    end_cx, end_cy = get_region_center(lead[-1])
+                    ax.plot(start_cx, start_cy, 'o', color=color, markersize=12,
+                           markeredgecolor='black', markeredgewidth=2, alpha=0.8, zorder=3)
+                    ax.plot(end_cx, end_cy, 'D', color=color, markersize=10,
+                           markeredgecolor='black', markeredgewidth=2, alpha=0.8, zorder=3)
+
+
+def compute_fig_size(env_min, env_max, max_dim=8):
+    """Compute figure size that matches the environment aspect ratio.
+
+    Args:
+        env_min, env_max: environment bounds as [x, y]
+        max_dim: maximum figure dimension in inches
+
+    Returns:
+        (width, height) tuple in inches
+    """
+    w = env_max[0] - env_min[0]
+    h = env_max[1] - env_min[1]
+    if w <= 0 or h <= 0:
+        return (max_dim, max_dim)
+    aspect = w / h
+    if aspect >= 1.0:
+        return (max_dim, max_dim / aspect)
+    else:
+        return (max_dim * aspect, max_dim)
+
+
+def static_gradient_plot(env_file, solution_file, config_file=None,
+                         models_path=None, planner_config_file=None,
+                         output_file=None):
+    """Static plot of robot paths with color gradients showing start-to-finish progression."""
+
+    loaded = load_solution_and_env(solution_file, env_file, config_file,
+                                   models_path, planner_config_file)
+    if loaded is None:
+        return
+    solution, paths, env, planner_config = loaded
+
+    env_min = env['environment']['min']
+    env_max = env['environment']['max']
+
+    fig_w, fig_h = compute_fig_size(env_min, env_max, max_dim=8)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_xlim(env_min[0], env_max[0])
+    ax.set_ylim(env_min[1], env_max[1])
+    ax.set_aspect('equal')
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_title('Multi-Robot Paths (gradient: light=start, dark=finish)')
+
+    draw_obstacles(ax, env)
+    draw_decomposition(ax, solution, env, planner_config)
+
+    base_colors = plt.cm.tab10(np.linspace(0, 1, max(len(paths), 1)))
+
+    for robot_idx, path in enumerate(paths):
+        if len(path) < 2:
+            continue
+
+        points = np.array([[s[0], s[1]] for s in path])
+        segments = np.stack([points[:-1], points[1:]], axis=1)
+
+        n_seg = len(segments)
+        base_rgba = np.array(base_colors[robot_idx])
+
+        # Build per-segment colors: alpha ramps from 0.25 to 1.0
+        colors = np.tile(base_rgba, (n_seg, 1))
+        colors[:, 3] = np.linspace(0.25, 1.0, n_seg)
+
+        lc = LineCollection(segments, colors=colors, linewidths=2.5, zorder=2)
+        ax.add_collection(lc)
+
+        robot_name = env['robots'][robot_idx].get('name', f'Robot {robot_idx}') if robot_idx < len(env['robots']) else f'Robot {robot_idx}'
+
+        # Start marker
+        ax.plot(points[0, 0], points[0, 1], 'o', color=base_rgba,
+                markersize=10, markeredgecolor='black', markeredgewidth=2,
+                zorder=3, label=robot_name)
+        # Goal marker
+        ax.plot(points[-1, 0], points[-1, 1], '*', color=base_rgba,
+                markersize=14, markeredgecolor='black', markeredgewidth=1.5,
+                zorder=3)
+
+    # Add a progress colorbar
+    sm = plt.cm.ScalarMappable(
+        cmap=plt.cm.Greys,
+        norm=plt.Normalize(vmin=0, vmax=100),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.04)
+    cbar.set_label('Progress %  (light = start, dark = finish)')
+
+    ax.legend(loc='upper right')
+    plt.tight_layout()
+
+    if output_file is None:
+        # Default: save next to the solution file
+        base = os.path.splitext(solution_file)[0]
+        output_file = base + '_paths.png'
+
+    fig.savefig(output_file, dpi=150)
+    print(f"Saved static gradient plot to {output_file}")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Interactive visualization for Multi-Robot SyCLoP solutions'
+        description='Interactive visualization for Multi-Robot SyCLoP solutions',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Supported formats:
+  - mr_syclop format: uses --env or --config with environment/robots fields
+  - s2m2/DB-RRT format: uses --config with agents/limits/obstacles/starts/goals fields
+  - dynobench/DB-RRT solution format: --env/--config optional (inferred from trajectory)
+
+Robot geometry priority:
+  1. Explicit 'radius' in config file
+  2. 'size' field in agent definition (s2m2 format)
+  3. Dynobench model file (loaded via --models-path)
+  4. DEFAULT_GEOMETRIES lookup by robot type
+  5. Fallback default (0.3)
+
+Examples:
+  # MR-SyCLoP format with environment file
+  %(prog)s --env env.yaml --solution solution.yaml
+
+  # s2m2/DB-RRT format with problem config
+  %(prog)s --config problem.yaml --solution out.yaml
+
+  # With explicit models path for robot geometry
+  %(prog)s --config problem.yaml --solution out.yaml --models-path ./dynobench/models/
+
+  # Solution only (geometry inferred from solution + models)
+  %(prog)s --solution out_dbrrt.yaml
+
+  # Speed control
+  %(prog)s --config problem.yaml --solution out.yaml --speed 2.0
+
+  # Hide high-level paths (show only trajectories)
+  %(prog)s --solution out.yaml --no-high-level
+
+  # Hide decomposition grid
+  %(prog)s --solution out.yaml --no-grid
+
+  # With planner config for decomposition grid (when not in solution)
+  %(prog)s --solution out.yaml --planner-config planner_cfgs/config.yaml
+
+  # Static gradient plot (color shows start-to-finish progression)
+  %(prog)s --solution out.yaml --static
+        '''
     )
-    parser.add_argument('--env', required=True, help='Environment YAML file')
+    parser.add_argument('--env', required=False, default=None,
+                        help='Environment YAML file (mr_syclop format)')
+    parser.add_argument('--config', required=False, default=None,
+                        help='Problem config YAML file (s2m2 or mr_syclop format)')
+    parser.add_argument('--planner-config', required=False, default=None,
+                        help='Planner config YAML file (for decomposition.resolution)')
     parser.add_argument('--solution', required=True, help='Solution YAML file')
     parser.add_argument('--speed', type=float, default=1.0,
                         help='Robot speed in map units per second (default: 1.0)')
+    parser.add_argument('--models-path', required=False, default=None,
+                        help='Path to dynobench models directory for robot geometry')
+    parser.add_argument('--show-high-level', action='store_true', default=True,
+                        help='Show high-level paths through decomposition regions (default: True)')
+    parser.add_argument('--no-high-level', action='store_true',
+                        help='Hide high-level paths')
+    parser.add_argument('--show-grid', action='store_true', default=True,
+                        help='Show decomposition grid lines (default: True)')
+    parser.add_argument('--no-grid', action='store_true',
+                        help='Hide decomposition grid lines')
+    parser.add_argument('--static', action='store_true',
+                        help='Show static gradient plot instead of interactive animation')
+    parser.add_argument('--output', '-o', required=False, default=None,
+                        help='Output image file for --static mode (default: <solution>_paths.png)')
 
     args = parser.parse_args()
 
-    interactive_animation(args.env, args.solution, args.speed)
+    if args.static:
+        static_gradient_plot(
+            env_file=args.env,
+            solution_file=args.solution,
+            config_file=args.config,
+            models_path=args.models_path,
+            planner_config_file=args.planner_config,
+            output_file=args.output,
+        )
+    else:
+        # Handle negation flags
+        show_high_level = args.show_high_level and not args.no_high_level
+        show_grid = args.show_grid and not args.no_grid
+
+        interactive_animation(
+            env_file=args.env,
+            solution_file=args.solution,
+            initial_speed=args.speed,
+            config_file=args.config,
+            models_path=args.models_path,
+            show_high_level=show_high_level,
+            show_grid=show_grid,
+            planner_config_file=args.planner_config,
+        )
 
 if __name__ == '__main__':
     main()

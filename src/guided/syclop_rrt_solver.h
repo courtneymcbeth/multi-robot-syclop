@@ -6,6 +6,8 @@
 #include <fcl/fcl.h>
 #include <memory>
 
+namespace mr_syclop {
+
 /**
  * @brief SyclopRRT-based guided planner implementation
  *
@@ -31,7 +33,7 @@ public:
      * @brief Solve guided planning for one robot
      */
     GuidedPlanningResult solve(
-        std::shared_ptr<Robot> robot,
+        std::shared_ptr<::Robot> robot,
         oc::DecompositionPtr decomp,
         ob::State* start_state,
         ob::State* goal_state,
@@ -41,8 +43,6 @@ public:
     std::string getName() const override { return "SyclopRRT"; }
 
 private:
-    // Configuration
-    GuidedPlannerConfig config_;
 
     // Collision manager for obstacles
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager_;
@@ -54,7 +54,7 @@ private:
      * and sets up the ProblemDefinition with start and goal states.
      */
     void setupOMPLComponents(
-        std::shared_ptr<Robot> robot,
+        std::shared_ptr<::Robot> robot,
         ob::State* start_state,
         ob::State* goal_state,
         oc::SpaceInformationPtr& si_out,
@@ -75,5 +75,7 @@ private:
      */
     void configurePlanner(oc::SyclopRRT& planner);
 };
+
+} // namespace mr_syclop
 
 #endif // SYCLOP_RRT_SOLVER_H

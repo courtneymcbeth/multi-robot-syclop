@@ -4,6 +4,7 @@
 [submodule "db-CBS"]
 	path = db-CBS
 	url = git@github.com:courtneymcbeth/db-CBS.git
+	branch = mr_syclop
 [submodule "crocoddyl"]
 	path = crocoddyl
 	url = git@github.com:loco-3d/crocoddyl.git

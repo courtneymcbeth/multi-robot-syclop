@@ -1,0 +1,18 @@
+# Configuration for Coupled RRT planner - Kinodynamic Mode (Default)
+# This mode uses kinodynamic RRT planning with full dynamics integration
+
+# Time limit for planning (seconds)
+time_limit: 60.0
+
+# Goal threshold distance
+goal_threshold: 0.5
+
+# Control duration range (number of propagation steps)
+min_control_duration: 1
+max_control_duration: 10
+
+# Random seed (-1 for random)
+seed: 42
+
+# Use geometric planning (default: false for kinodynamic)
+use_geometric: false

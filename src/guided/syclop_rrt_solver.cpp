@@ -1,4 +1,5 @@
 #include "syclop_rrt_solver.h"
+#include "robots.h"
 #include "robotStatePropagator.hpp"
 #include "fclStateValidityChecker.hpp"
 #include <ompl/base/goals/GoalState.h>
@@ -6,16 +7,18 @@
 #include <iostream>
 #include <chrono>
 
+namespace mr_syclop {
+
 SyclopRRTSolver::SyclopRRTSolver(
     const GuidedPlannerConfig& config,
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager)
-    : config_(config)
+    : GuidedPlanner(config)
     , collision_manager_(collision_manager)
 {
 }
 
 GuidedPlanningResult SyclopRRTSolver::solve(
-    std::shared_ptr<Robot> robot,
+    std::shared_ptr<::Robot> robot,
     oc::DecompositionPtr decomp,
     ob::State* start_state,
     ob::State* goal_state,
@@ -57,8 +60,15 @@ GuidedPlanningResult SyclopRRTSolver::solve(
         planner->setProblemDefinition(pdef);
         planner->setup();
 
-        ob::PlannerStatus status = planner->solve(
-            ob::timedPlannerTerminationCondition(config_.time_per_robot));
+        // Use exactSolnPlannerTerminationCondition to stop after finding first solution
+        // Falls back to time limit if no solution found
+        ob::PlannerTerminationCondition exactSolnPtc =
+            ob::exactSolnPlannerTerminationCondition(pdef);
+        ob::PlannerTerminationCondition timedPtc =
+            ob::timedPlannerTerminationCondition(config_.time_per_robot);
+        ob::PlannerTerminationCondition ptc(
+            [&exactSolnPtc, &timedPtc] { return exactSolnPtc() || timedPtc(); });
+        ob::PlannerStatus status = planner->solve(ptc);
 
         // 6. Extract solution if found
         if (status == ob::PlannerStatus::EXACT_SOLUTION ||
@@ -102,7 +112,7 @@ GuidedPlanningResult SyclopRRTSolver::solve(
 }
 
 void SyclopRRTSolver::setupOMPLComponents(
-    std::shared_ptr<Robot> robot,
+    std::shared_ptr<::Robot> robot,
     ob::State* start_state,
     ob::State* goal_state,
     oc::SpaceInformationPtr& si_out,
@@ -112,8 +122,10 @@ void SyclopRRTSolver::setupOMPLComponents(
     si_out = robot->getSpaceInformation();
 
     // Set state validity checker (robot-obstacle collisions only)
+    // Cast control::SpaceInformationPtr to base::SpaceInformationPtr
+    ob::SpaceInformationPtr base_si = std::static_pointer_cast<ob::SpaceInformation>(si_out);
     auto validity_checker = std::make_shared<fclStateValidityChecker>(
-        si_out, collision_manager_, robot, false);
+        base_si, collision_manager_, robot, false);
     si_out->setStateValidityChecker(validity_checker);
 
     // State propagator should already be set by MRSyCLoPPlanner
@@ -127,7 +139,7 @@ void SyclopRRTSolver::setupOMPLComponents(
 
     // Create problem definition
     pdef_out = std::make_shared<ob::ProblemDefinition>(si_out);
-    pdef_out->setStartAndGoalStates(start_state, goal_state);
+    pdef_out->setStartAndGoalStates(start_state, goal_state, config_.goal_threshold);
 }
 
 oc::Syclop::LeadComputeFn SyclopRRTSolver::createLeadFunction(
@@ -136,9 +148,39 @@ oc::Syclop::LeadComputeFn SyclopRRTSolver::createLeadFunction(
     // Capture region_path by value in the lambda
     return [region_path](int startRegion, int goalRegion,
                          std::vector<int>& lead) {
-        // The MAPF algorithm has already computed the high-level path
-        // Simply return it as the lead
-        lead = region_path;
+        // The MAPF algorithm has already computed the high-level path.
+        // However, OMPL's Syclop planners expect the lead to be consistent with
+        // the (startRegion, goalRegion) passed in at runtime.
+        //
+        // In practice, small numerical/boundary effects can make locateRegion()
+        // differ from what MAPF produced (especially for local decompositions),
+        // and returning an inconsistent lead can cause poor guidance or failure.
+        lead.clear();
+
+        if (region_path.empty()) {
+            lead.push_back(startRegion);
+            if (goalRegion != startRegion) {
+                lead.push_back(goalRegion);
+            }
+            return;
+        }
+
+        // Ensure lead starts at startRegion
+        if (region_path.front() != startRegion) {
+            lead.push_back(startRegion);
+        }
+
+        // Append MAPF path, skipping immediate duplicates
+        for (int r : region_path) {
+            if (lead.empty() || lead.back() != r) {
+                lead.push_back(r);
+            }
+        }
+
+        // Ensure lead ends at goalRegion
+        if (!lead.empty() && lead.back() != goalRegion) {
+            lead.push_back(goalRegion);
+        }
 
 #ifdef DBG_PRINTS
         // Validate that the path starts and ends correctly
@@ -166,3 +208,5 @@ void SyclopRRTSolver::configurePlanner(oc::SyclopRRT& planner)
     planner.setProbShortestPathLead(config_.prob_shortest_path);
     planner.setRegionalNearestNeighbors(config_.use_regional_nn);
 }
+
+} // namespace mr_syclop

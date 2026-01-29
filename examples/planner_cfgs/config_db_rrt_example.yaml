@@ -1,0 +1,148 @@
+# MR-SyCLoP Configuration with DB-RRT Guided Planner
+#
+# This configuration demonstrates how to use DB-RRT as the guided planner
+# for low-level path planning in the MR-SyCLoP framework.
+
+# Maximum total planning time in seconds (0 = no limit)
+# The planner will terminate and return failure if this time is exceeded
+max_total_time: 300.0
+
+# Decomposition configuration (required)
+# decomposition_region_length: 1  # Grid cell size for region decomposition
+# Decomposition region length
+decomposition_region_length: 5
+
+# Decomposition output directory (for visualization/debugging)
+# Set to empty string or omit to disable decomposition saving
+decomposition_output_dir: "examples/output/decompositions"
+
+# Path segmentation configuration
+segment_timesteps: 30      # Number of timesteps per segment
+
+# High-level MAPF solver
+mapf:
+  method: "cbs"           # Options: "decoupled", "astar", "cbs"
+  region_capacity: 2      # Maximum robots per region (vertex/edge)
+
+# mapf_method: "cbs"  # Options: "cbs", "decoupled"
+
+# Low-level guided planner
+guided_planner_method: "db_rrt"  # Options: "syclop_rrt", "db_rrt"
+
+# Guided planner configuration
+guided_planner:
+  # Time budget per robot (seconds)
+  time_per_robot: 10.0
+
+  # Debug output
+  debug: false
+
+  # SyclopRRT-specific parameters (only used if guided_planner_method: "syclop_rrt")
+  num_free_volume_samples: 100000
+  num_region_expansions: 100
+  num_tree_expansions: 1
+  prob_abandon_lead_early: 0.25
+  prob_shortest_path: 0.95
+  use_regional_nn: true
+
+  # DB-RRT specific parameters (only used if guided_planner_method: "db_rrt")
+  # Note: When guided_planner_method is "db_rrt", the planner uses CompositeDBRRT
+  # for joint multi-robot planning (configured in composite_dbrrt section below)
+  db_rrt:
+    # Path to motion primitives file
+    motions_file: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+
+    # Path to dynobench models directory (must end with /)
+    models_base_path: "db-CBS/dynoplan/dynobench/models/"
+
+    # Planning parameters
+    timelimit: 10.0           # Time limit in seconds (overridden by time_per_robot)
+    max_expands: 10000        # Maximum tree expansions
+    goal_region: 0.3          # Goal region radius
+    delta: 0.3                # Step size for extension
+    goal_bias: 0.1            # Probability of sampling goal
+    max_motions: 1000         # Maximum motion primitives to load
+    seed: 15
+
+    # Optimization
+    do_optimization: true    # Enable trajectory optimization
+    solver_id: 0              # Trajectory optimizer solver ID
+
+    # Advanced parameters
+    use_nigh_nn: true         # Use nigh nearest neighbor data structure
+    debug: false              # DB-RRT debug output
+
+    # Region guidance
+    use_region_guidance: true # Use region path for guidance
+    region_bias: 0.3          # Bias towards regions in path
+
+  # Composite DB-RRT configuration (used when guided_planner_method: "db_rrt")
+  # This enables joint multi-robot planning with tensor product coordination
+  composite_dbrrt:
+    # Time limit for planning (seconds)
+    time_limit: 120.0
+
+    # Per-robot DB-RRT parameters
+    delta: 0.3                # Motion primitive search radius
+    goal_region: 0.5          # Goal threshold for individual robots
+    max_motions: 1000         # Max primitives to load per robot
+
+    # Composite search parameters
+    expansions_per_iter: 5    # Expansions per iteration
+    goal_threshold: 0.5       # Per-robot goal check threshold
+    goal_bias: 0.1            # Goal bias for sampling
+    require_all_move: false   # If true, all robots must move in each expansion
+
+    # Path to dynobench models directory
+    models_base_path: "db-CBS/dynoplan/dynobench/models/"
+
+    # Random seed (-1 for random)
+    seed: 15
+
+    # Debug output
+    debug: true
+
+    # Motion primitive files per robot type
+    motion_files:
+      unicycle_first_order_0_sphere: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+
+# Collision resolution strategy
+collision_resolution_method: "coupled_rrt"  # Options: "coupled_rrt", "drrt", "srrt", "none"
+
+# Coupled RRT configuration (for collision resolution)
+coupled_rrt:
+  time_per_group: 30.0
+  max_planning_time: 120.0
+  use_connect: true
+
+# Collision resolution configuration
+# Resolution continues until all collisions resolved or a collision exhausts all strategies
+collision_resolution:
+  max_decomposition_attempts: 3       # Decomposition refinement levels (0=skip)
+  max_subproblem_expansion_attempts: 3  # Subproblem expansion attempts (0=skip)
+  max_composite_attempts: 1           # Composite planner attempts (0=skip) - final fallback
+  decomposition_subdivision_factor: 2.0
+  recheck_from_prior_segment: true    # If true, start collision re-checking from prior segment start instead of collision timestep
+  escalation_frequency: 3             # After N collisions for same robot pair, increase min expansion layer (0=disable)
+
+# Planning parameters
+max_iterations: 10            # Maximum collision resolution iterations
+segment_duration: 0.5         # Duration of trajectory segments for collision checking (seconds)
+
+# Environment decomposition
+decomposition:
+  type: "grid"                # "grid" or "triangulation"
+  resolution: [10, 10, 1]     # Grid cells in x, y, z (z=1 for 2D)
+
+# Debug options
+debug:
+  print_stats: true
+  save_paths: true
+  visualization: false
+
+# Example robot-specific motion primitives
+# If you want to specify different primitives per robot type, you can do:
+# robot_motion_primitives:
+#   unicycle1_v0: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+#   quad2d_v0: "db-CBS/dynoplan/dynomotions/quad2d_v0_all_im.bin.sp.bin.ca.bin.small5000.msgpack"
+#   quad3d_v0: "db-CBS/dynoplan/dynomotions/quad3d_v0_all3.bin.im.bin.sp1.bin.ca.bin.small5000.msgpack"

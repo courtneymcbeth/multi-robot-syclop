@@ -43,6 +43,12 @@ private:
         const RegionGraph& graph,
         int start_region,
         int goal_region);
+
+    int findNearestValidNeighbor(
+        oc::DecompositionPtr decomp,
+        int region,
+        const std::vector<fcl::CollisionObjectf*>& obstacles,
+        double max_obstacle_volume_percent);
 };
 
 #endif // MAPF_DECOUPLED_H
