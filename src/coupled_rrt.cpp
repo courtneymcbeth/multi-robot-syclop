@@ -45,6 +45,50 @@ namespace oc = ompl::control;
 namespace og = ompl::geometric;
 
 // ============================================================================
+// GeometricMultiRobotGoalState - goal class compatible with base SpaceInformation
+// ============================================================================
+
+class GeometricMultiRobotGoalState : public ob::GoalState
+{
+public:
+    GeometricMultiRobotGoalState(const ob::SpaceInformationPtr &si)
+        : ob::GoalState(si)
+    {
+    }
+
+    size_t numRobots() const
+    {
+        auto csp = si_->getStateSpace()->as<ob::CompoundStateSpace>();
+        return csp->getSubspaceCount();
+    }
+
+    double distanceGoal(const ob::State* st, int robot_idx) const
+    {
+        auto csp = si_->getStateSpace()->as<ob::CompoundStateSpace>();
+        auto cst = st->as<ob::CompoundStateSpace::StateType>();
+        auto cgoal_state = state_->as<ob::CompoundStateSpace::StateType>();
+        auto si_k = csp->getSubspace(robot_idx);
+        auto st_k = (*cst)[robot_idx];
+        auto goal_state_k = (*cgoal_state)[robot_idx];
+        return si_k->distance(st_k, goal_state_k);
+    }
+
+    double distanceGoal(const ob::State *st) const override
+    {
+        double result = 0;
+        for (size_t k = 0; k < numRobots(); ++k) {
+            result = fmax(result, distanceGoal(st, k));
+        }
+        return result;
+    }
+
+    bool isSatisfied(const ob::State* st, int robot_idx) const
+    {
+        return distanceGoal(st, robot_idx) < threshold_;
+    }
+};
+
+// ============================================================================
 // CompoundStatePropagator - propagates each robot independently
 // ============================================================================
 
@@ -362,10 +406,17 @@ void CoupledRRTPlanner::setupProblemDefinition()
         auto individual_space = robots_[i]->getSpaceInformation()->getStateSpace();
         individual_space->copyState(cg->components[i], goal_states_[i]);
     }
-    auto goal = std::make_shared<MultiRobotGoalState>(compound_si_);
-    goal->setState(compound_goal);
-    goal->setThreshold(config_.goal_threshold);
-    pdef_->setGoal(goal);
+    if (config_.use_geometric) {
+        auto goal = std::make_shared<GeometricMultiRobotGoalState>(compound_si_);
+        goal->setState(compound_goal);
+        goal->setThreshold(config_.goal_threshold);
+        pdef_->setGoal(goal);
+    } else {
+        auto goal = std::make_shared<MultiRobotGoalState>(compound_si_);
+        goal->setState(compound_goal);
+        goal->setThreshold(config_.goal_threshold);
+        pdef_->setGoal(goal);
+    }
 }
 
 PlanningResult CoupledRRTPlanner::plan(const PlanningProblem& problem)
