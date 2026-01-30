@@ -26,6 +26,8 @@
 // OMPL headers - Geometric
 #include <ompl/geometric/planners/rrt/RRT.h>
 #include <ompl/geometric/PathGeometric.h>
+#include <ompl/datastructures/NearestNeighborsGNATNoThreadSafety.h>
+#include <ompl/tools/config/SelfConfig.h>
 
 // OMPL headers - Base
 #include <ompl/base/StateSpace.h>
@@ -235,6 +237,229 @@ public:
 private:
     ob::State* goal_state_;
 };
+
+// ============================================================================
+// Custom geometric RRT with correct step counting
+// ============================================================================
+
+struct GeometricMotion {
+    ob::State *state{nullptr};
+    GeometricMotion *parent{nullptr};
+    unsigned int step{0};
+};
+
+// Check motion from s1 to s2 with time-aware dynamic obstacle checking.
+// Unlike OMPL's checkMotionTest (which checks the destination at step+1),
+// this checks the destination at parentStep + validSegmentCount, keeping the
+// step counter aligned with the number of validation segments traversed.
+static bool checkMotionTimed(
+    const ob::SpaceInformationPtr &si,
+    const ob::State *s1, const ob::State *s2,
+    unsigned int parentStep, unsigned int &newStep)
+{
+    auto ss = si->getStateSpace().get();
+    unsigned int nd = ss->validSegmentCount(s1, s2);
+    newStep = parentStep + std::max(1u, nd);
+
+    // Check destination at arrival time
+    if (!si->isValid(s2, static_cast<double>(newStep)))
+        return false;
+
+    // Check intermediate subdivision points
+    if (nd >= 2) {
+        auto *test = si->allocState();
+        bool valid = true;
+        for (unsigned int k = 1; k < nd; ++k) {
+            double frac = static_cast<double>(k) / static_cast<double>(nd);
+            ss->interpolate(s1, s2, frac, test);
+            if (!si->isValid(test, static_cast<double>(parentStep + k))) {
+                valid = false;
+                break;
+            }
+        }
+        si->freeState(test);
+        if (!valid)
+            return false;
+    }
+
+    return true;
+}
+
+// Solve a single-robot geometric RRT with step counting that advances by
+// validSegmentCount per extend (instead of by 1).  Returns true on success
+// and fills path_states / path_steps with the solution (start→goal order).
+static bool solveGeometricRRT(
+    const ob::SpaceInformationPtr &si,
+    const ob::ProblemDefinitionPtr &pdef,
+    const ob::State *goal_state,
+    const ob::PlannerTerminationCondition &ptc,
+    std::vector<const ob::State*> &path_states,
+    std::vector<unsigned int> &path_steps,
+    og::PathGeometricPtr &solution_path)
+{
+    // Configure range (same formula OMPL uses: 20% of space extent)
+    double maxDistance = si->getMaximumExtent() * 0.2;
+    const double goalBias = 0.05;
+
+    auto ss = si->getStateSpace().get();
+    auto goal = pdef->getGoal()->as<ob::GoalRegion>();
+
+    // Nearest-neighbor tree
+    auto nn = std::make_shared<ompl::NearestNeighborsGNATNoThreadSafety<GeometricMotion*>>();
+    nn->setDistanceFunction([&si](const GeometricMotion *a, const GeometricMotion *b) {
+        return si->distance(a->state, b->state);
+    });
+
+    // All motions (for cleanup)
+    std::vector<GeometricMotion*> allMotions;
+
+    // Add start state
+    auto *startMotion = new GeometricMotion();
+    startMotion->state = si->allocState();
+    si->copyState(startMotion->state, pdef->getStartState(0));
+    startMotion->step = 0;
+    nn->add(startMotion);
+    allMotions.push_back(startMotion);
+
+    // Allocate temp states
+    auto sampler = si->allocStateSampler();
+    auto *rstate = si->allocState();
+    auto *xstate = si->allocState();
+
+    ompl::RNG rng;
+    GeometricMotion *solutionMotion = nullptr;
+    GeometricMotion queryMotion;
+
+    while (!ptc) {
+        // Sample with goal bias
+        if (rng.uniform01() < goalBias)
+            si->copyState(rstate, goal_state);
+        else
+            sampler->sampleUniform(rstate);
+
+        // Find nearest
+        queryMotion.state = rstate;
+        GeometricMotion *nearest = nn->nearest(&queryMotion);
+
+        // Steer: clamp to maxDistance
+        ob::State *dstate = rstate;
+        double d = si->distance(nearest->state, rstate);
+        if (d > maxDistance) {
+            ss->interpolate(nearest->state, rstate, maxDistance / d, xstate);
+            dstate = xstate;
+        }
+
+        // Check motion with time-aware validation
+        unsigned int newStep = 0;
+        if (checkMotionTimed(si, nearest->state, dstate, nearest->step, newStep)) {
+            auto *motion = new GeometricMotion();
+            motion->state = si->allocState();
+            si->copyState(motion->state, dstate);
+            motion->parent = nearest;
+            motion->step = newStep;
+            nn->add(motion);
+            allMotions.push_back(motion);
+
+            // Check goal
+            double dist = 0.0;
+            if (goal->isSatisfied(motion->state, &dist)) {
+                solutionMotion = motion;
+                break;
+            }
+        }
+    }
+
+    bool solved = (solutionMotion != nullptr);
+
+    if (solved) {
+        // Backtrack to extract path (goal → start order)
+        std::vector<GeometricMotion*> mpath;
+        for (auto *m = solutionMotion; m != nullptr; m = m->parent)
+            mpath.push_back(m);
+        std::reverse(mpath.begin(), mpath.end());
+
+        // Fill output vectors
+        path_states.clear();
+        path_steps.clear();
+        for (auto *m : mpath) {
+            path_states.push_back(m->state);
+            path_steps.push_back(m->step);
+        }
+
+        // Build PathGeometric for output
+        solution_path = std::make_shared<og::PathGeometric>(si);
+        for (auto *m : mpath)
+            solution_path->append(m->state);
+    }
+
+    // Cleanup temp states (tree states freed after dynamic obstacles are set up)
+    si->freeState(rstate);
+    si->freeState(xstate);
+
+    // NOTE: we intentionally do NOT free the tree motions here because
+    // path_states contains pointers into them.  The caller must keep
+    // allMotions alive until dynamic obstacles are added, then call:
+    //   for (auto *m : allMotions) { si->freeState(m->state); delete m; }
+    // We move ownership out via a swap.
+    // Actually, let's return allMotions via a parameter so the caller can free.
+    // For simplicity, we'll leak the non-solution motions and let the OS reclaim
+    // at process exit.  The path states are copied into PathGeometric anyway.
+
+    // Free all tree motions -- path_states points into these so we must copy first.
+    // The PathGeometric already deep-copied the states via append(), so path_states
+    // now just needs to reference the PathGeometric states for dynamic obstacles.
+    // Re-point path_states into the PathGeometric's copies:
+    path_states.clear();
+    for (size_t i = 0; i < solution_path->getStateCount(); ++i)
+        path_states.push_back(solution_path->getState(i));
+
+    // Now safe to free the tree
+    for (auto *m : allMotions) {
+        si->freeState(m->state);
+        delete m;
+    }
+
+    std::cout << "Info:    CustomGeometricRRT: Created " << allMotions.size() << " states" << std::endl;
+    return solved;
+}
+
+// Add dynamic obstacles from a solved robot's path at every integer time step.
+// Interpolates between path waypoints to fill in the gaps created by advancing
+// step by validSegmentCount rather than by 1.
+static void addInterpolatedDynamicObstacles(
+    const ob::SpaceInformationPtr &robot_si,
+    const std::shared_ptr<omrb::SpaceInformation> &ma_si,
+    int target_robot,
+    const std::vector<const ob::State*> &path_states,
+    const std::vector<unsigned int> &path_steps)
+{
+    if (path_states.size() < 2) return;
+
+    auto ss = robot_si->getStateSpace().get();
+    auto *temp = robot_si->allocState();
+    auto target_si = ma_si->getIndividual(target_robot);
+
+    for (size_t i = 0; i + 1 < path_states.size(); ++i) {
+        unsigned int step_i = path_steps[i];
+        unsigned int step_next = path_steps[i + 1];
+        unsigned int nd = step_next - step_i;
+
+        for (unsigned int k = 0; k < nd; ++k) {
+            double frac = static_cast<double>(k) / static_cast<double>(nd);
+            ss->interpolate(path_states[i], path_states[i + 1], frac, temp);
+            auto cloned = robot_si->cloneState(temp);
+            target_si->addDynamicObstacle(
+                static_cast<double>(step_i + k), robot_si, cloned);
+        }
+    }
+
+    // Add final state
+    auto cloned = robot_si->cloneState(path_states.back());
+    target_si->addDynamicObstacle(
+        static_cast<double>(path_steps.back()), robot_si, cloned);
+
+    robot_si->freeState(temp);
+}
 
 // ============================================================================
 // Planner allocator for PP
@@ -523,35 +748,36 @@ int main(int argc, char** argv)
     std::vector<og::PathGeometricPtr> geometric_paths;
 
     if (use_geometric) {
-        // ===== GEOMETRIC MODE: Manual PP loop =====
-        // We implement the prioritized planning loop directly instead of using
-        // omrg::PP because the library has a use-after-free bug: it stores raw
-        // state pointers as dynamic obstacles from a path that is then destroyed.
+        // ===== GEOMETRIC MODE: Custom RRT with correct step counting =====
+        // Uses a custom RRT that advances step by validSegmentCount per extend
+        // (instead of by 1), so the time model for dynamic obstacles stays
+        // correct without needing addIntermediateStates (which inflates the
+        // tree by ~10x).
         solved = true;
         auto ptc = ob::timedPlannerTerminationCondition(timelimit);
         for (int r = 0; r < num_robots; ++r) {
-            auto rrt = std::make_shared<og::RRT>(robot_sis[r], true);
-            rrt->setProblemDefinition(ma_pdef->getIndividual(r));
-            bool robot_solved = rrt->solve(ptc);
+            std::vector<const ob::State*> path_states;
+            std::vector<unsigned int> path_steps;
+            og::PathGeometricPtr path;
+
+            bool robot_solved = solveGeometricRRT(
+                robot_sis[r], ma_pdef->getIndividual(r),
+                goal_states[r], ptc,
+                path_states, path_steps, path);
+
             if (robot_solved) {
-                auto path = std::make_shared<og::PathGeometric>(
-                    *rrt->getProblemDefinition()->getSolutionPath()->as<og::PathGeometric>());
                 geometric_paths.push_back(path);
 
-                // Add path states as dynamic obstacles for subsequent robots,
-                // cloning each state so pointers remain valid independently
+                // Add interpolated dynamic obstacles for subsequent robots
                 for (int r2 = r + 1; r2 < num_robots; ++r2) {
-                    for (size_t t = 0; t < path->getStateCount(); ++t) {
-                        auto cloned = robot_sis[r]->cloneState(path->getState(t));
-                        ma_si->getIndividual(r2)->addDynamicObstacle(
-                            static_cast<double>(t), robot_sis[r], cloned);
-                    }
+                    addInterpolatedDynamicObstacles(
+                        robot_sis[r], ma_si, r2,
+                        path_states, path_steps);
                 }
             } else {
                 solved = false;
                 break;
             }
-            rrt->clear();
         }
     } else {
         // ===== KINODYNAMIC MODE: Use omrc::PP =====

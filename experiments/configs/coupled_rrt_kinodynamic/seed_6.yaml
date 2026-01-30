@@ -1,0 +1,1 @@
+{goal_threshold: 1.0, min_control_duration: 1, max_control_duration: 10, seed: 6}

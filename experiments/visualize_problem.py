@@ -99,7 +99,7 @@ def draw_obstacles(ax, env):
             print(f"Warning: Unsupported obstacle type '{obs_type}'")
 
 
-def draw_robots(ax, env, show_radius=True):
+def draw_robots(ax, env):
     """Draw robot start and goal positions."""
     robots = env.get('robots', [])
     if not robots:
@@ -119,40 +119,29 @@ def draw_robots(ax, env, show_radius=True):
         # Get robot radius for visualization
         robot_radius = get_robot_radius(robot_config)
 
-        if show_radius:
-            # Draw robot footprint at start
-            start_circle = patches.Circle(
-                (start[0], start[1]), robot_radius,
-                color=color, alpha=0.2,
-                edgecolor='black', linewidth=1.5,
-                zorder=2
-            )
-            ax.add_patch(start_circle)
+        # Draw robot footprint at start
+        start_circle = patches.Circle(
+            (start[0], start[1]), robot_radius,
+            color=color, alpha=0.6,
+            edgecolor='black', linewidth=1.5,
+            label=f'{robot_name} start', zorder=3
+        )
+        ax.add_patch(start_circle)
+        ax.text(start[0], start[1], str(robot_idx),
+                ha='center', va='center', fontsize=14,
+                fontweight='bold', zorder=5)
 
-            # Draw robot footprint at goal (dashed outline)
-            goal_circle = patches.Circle(
-                (goal[0], goal[1]), robot_radius,
-                color=color, alpha=0.2,
-                edgecolor='black', linewidth=1.5,
-                linestyle='--', zorder=2
-            )
-            ax.add_patch(goal_circle)
-
-        # Draw start position marker (filled circle)
-        ax.plot(start[0], start[1], 'o',
-                color=color, markersize=10,
-                markeredgecolor='black', markeredgewidth=1.5,
-                label=f'{robot_name} start', zorder=3)
-
-        # Draw goal position marker (star)
-        ax.plot(goal[0], goal[1], '*',
-                color=color, markersize=14,
-                markeredgecolor='black', markeredgewidth=1,
-                label=f'{robot_name} goal', zorder=3)
-
-        # Draw line connecting start to goal (straight line reference)
-        ax.plot([start[0], goal[0]], [start[1], goal[1]],
-                '--', color=color, alpha=0.3, linewidth=1, zorder=1)
+        # Draw robot footprint at goal (reduced opacity)
+        goal_circle = patches.Circle(
+            (goal[0], goal[1]), robot_radius,
+            color=color, alpha=0.25,
+            edgecolor='black', linewidth=1.5,
+            label=f'{robot_name} goal', zorder=2
+        )
+        ax.add_patch(goal_circle)
+        ax.text(goal[0], goal[1], str(robot_idx),
+                ha='center', va='center', fontsize=14,
+                fontweight='bold', alpha=0.5, zorder=5)
 
 
 def draw_solution_paths(ax, env, solution):
@@ -184,7 +173,7 @@ def draw_solution_paths(ax, env, solution):
 
 
 def visualize_environment(env_file, solution_file=None, output_file=None,
-                         title=None, show_legend=True, figsize=(10, 8)):
+                         title=None, show_legend=False, figsize=(10, 8)):
     """
     Visualize an environment with optional solution paths.
 
@@ -208,8 +197,8 @@ def visualize_environment(env_file, solution_file=None, output_file=None,
     ax.set_xlim(env_min[0], env_max[0])
     ax.set_ylim(env_min[1], env_max[1])
     ax.set_aspect('equal')
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
+    ax.set_xticks([])
+    ax.set_yticks([])
 
     # Set title
     if title:
@@ -232,9 +221,6 @@ def visualize_environment(env_file, solution_file=None, output_file=None,
     if show_legend and env.get('robots'):
         ax.legend(loc='upper left', fontsize=8, ncol=2)
 
-    # Add grid
-    ax.grid(True, alpha=0.3)
-
     plt.tight_layout()
 
     if output_file:
@@ -255,7 +241,7 @@ def main():
     parser.add_argument('--solution', '-s', help='Solution YAML file')
     parser.add_argument('--output', '-o', help='Output image file (PNG, PDF, etc.)')
     parser.add_argument('--title', '-t', help='Custom title for the plot')
-    parser.add_argument('--no-legend', action='store_true', help='Hide legend')
+    parser.add_argument('--legend', action='store_true', help='Show legend')
     parser.add_argument('--figsize', type=float, nargs=2, default=[10, 8],
                        help='Figure size (width height)')
 
@@ -266,7 +252,7 @@ def main():
         solution_file=args.solution,
         output_file=args.output,
         title=args.title,
-        show_legend=not args.no_legend,
+        show_legend=args.legend,
         figsize=tuple(args.figsize)
     )
 

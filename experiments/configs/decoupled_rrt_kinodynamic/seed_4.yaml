@@ -1,0 +1,2 @@
+{goal_threshold: 0.5, min_control_duration: 1, max_control_duration: 10, propagation_step_size: 0.1,
+  seed: 4}
