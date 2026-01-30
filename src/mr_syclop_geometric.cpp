@@ -1,7 +1,4 @@
-// Pinocchio/Crocoddyl must be included before Boost headers
-#include <dynoplan/optimization/ocp.hpp>
-
-#include "mr_syclop.h"
+#include "mr_syclop_geometric.h"
 
 #include <iostream>
 #include <fstream>
@@ -24,22 +21,7 @@
 namespace po = boost::program_options;
 
 #define DBG_PRINTS
-#include "db_astar.hpp"
 #include "planresult.hpp"
-#include "dynoplan/optimization/multirobot_optimization.hpp"
-
-namespace {
-class GeometricPropagator : public oc::StatePropagator {
-public:
-    GeometricPropagator(const oc::SpaceInformationPtr& si)
-        : oc::StatePropagator(si) {}
-
-    void propagate(const ob::State* state, const oc::Control* /*control*/,
-                   double /*duration*/, ob::State* result) const override {
-        si_->getStateSpace()->copyState(result, state);
-    }
-};
-}  // namespace
 
 // ============================================================================
 // MRSyCLoPPlanner Implementation
@@ -117,10 +99,6 @@ void MRSyCLoPPlanner::loadProblem(
     // Setup decomposition, collision manager, and robots
     setupDecomposition();
     setupCollisionManager();
-    // Convert FCL obstacles to dynobench format if using DB-RRT
-    if (config_.guided_planner_method == "db_rrt") {
-        setupDynobenchObstacles();
-    }
     setupRobots();
 
     problem_loaded_ = true;
@@ -166,44 +144,6 @@ void MRSyCLoPPlanner::setupCollisionManager()
 #endif
 }
 
-void MRSyCLoPPlanner::setupDynobenchObstacles()
-{
-    ScopedFunctionTimer timer(timing_log_, "setupDynobenchObstacles");
-#ifdef DBG_PRINTS
-    std::cout << "Converting obstacles to dynobench format..." << std::endl;
-#endif
-    dynobench_obstacles_.clear();
-    dynobench_obstacles_.reserve(obstacles_.size());
-
-    for (const auto* obs : obstacles_) {
-        const auto* geom = obs->collisionGeometry().get();
-        const auto& translation = obs->getTranslation();
-
-        // Check if it's a box (currently the only supported type)
-        if (const auto* box = dynamic_cast<const fcl::Boxf*>(geom)) {
-            dynobench::Obstacle dyno_obs;
-            dyno_obs.type = "box";
-
-            // FCL Boxf stores half-extents as side[i], full size = 2 * side[i]
-            // But we created it with full size, so box->side is actually half the size
-            // Actually, FCL Boxf constructor takes full width/height/depth
-            dyno_obs.size.resize(2);
-            dyno_obs.size(0) = box->side[0];  // width
-            dyno_obs.size(1) = box->side[1];  // height
-
-            dyno_obs.center.resize(2);
-            dyno_obs.center(0) = static_cast<double>(translation[0]);
-            dyno_obs.center(1) = static_cast<double>(translation[1]);
-
-            dynobench_obstacles_.push_back(dyno_obs);
-        }
-    }
-
-#ifdef DBG_PRINTS
-    std::cout << "  Converted " << dynobench_obstacles_.size() << " obstacles to dynobench format" << std::endl;
-#endif
-}
-
 void MRSyCLoPPlanner::setupRobots()
 {
     ScopedFunctionTimer timer(timing_log_, "setupRobots");
@@ -222,18 +162,10 @@ void MRSyCLoPPlanner::setupRobots()
         auto robot = create_robot(robot_types_[i], position_bounds);
         auto si = robot->getSpaceInformation();
 
-        if (config_.use_kinodynamics) {
-            // Kinodynamic mode: full dynamics propagation
-            si->setStatePropagator(std::make_shared<RobotStatePropagator>(si, robot));
-        } else {
-            // Geometric mode: trivial propagator + obstacle validity checking
-            auto control_si = std::dynamic_pointer_cast<oc::SpaceInformation>(si);
-            if (control_si) {
-                control_si->setStatePropagator(std::make_shared<GeometricPropagator>(control_si));
-            }
-            si->setStateValidityChecker(
-                std::make_shared<fclStateValidityChecker>(si, collision_manager_, robot));
-        }
+        // Geometric mode: use robot's kinematics for propagation + obstacle validity checking
+        si->setStatePropagator(std::make_shared<RobotStatePropagator>(si, robot));
+        si->setStateValidityChecker(
+            std::make_shared<fclStateValidityChecker>(si, collision_manager_, robot));
 
         si->setup();
         robots_.push_back(robot);
@@ -310,12 +242,10 @@ void MRSyCLoPPlanner::computeGuidedPaths()
     guided_planning_results_.clear();
 
     // Create guided planner for individual robot planning
-    auto guided_planner = createGuidedPlannerWithDBRRT(
+    auto guided_planner = createGuidedPlanner(
         config_.guided_planner_method,
         config_.guided_planner_config,
-        config_.db_rrt_config,
-        collision_manager_,
-        dynobench_obstacles_);
+        collision_manager_);
 
     // Plan for each robot independently
     for (size_t i = 0; i < robots_.size(); ++i) {
@@ -355,136 +285,6 @@ void MRSyCLoPPlanner::computeGuidedPaths()
 #endif
 }
 
-void MRSyCLoPPlanner::computeGuidedPathsWithCompositeDBRRT()
-{
-    ScopedFunctionTimer timer(timing_log_, "computeGuidedPathsWithCompositeDBRRT");
-#ifdef DBG_PRINTS
-    std::cout << "Using CompositeDBRRT for joint multi-robot planning..." << std::endl;
-#endif
-
-    // Build the CompositeDBRRT problem
-    CompositeDBRRTProblem problem;
-    problem.env_min = env_min_;
-    problem.env_max = env_max_;
-    problem.obstacles = obstacles_;
-    problem.dynobench_obstacles = dynobench_obstacles_;
-
-    // Add robot specifications
-    for (size_t i = 0; i < robots_.size(); ++i) {
-        CompositeRobotSpec spec;
-        spec.type = robot_types_[i];
-        spec.start = starts_[i];
-        spec.goal = goals_[i];
-        problem.robots.push_back(spec);
-    }
-
-    // Create and run the CompositeDBRRT planner
-    CompositeDBRRTPlanner composite_planner(config_.composite_dbrrt_config);
-    CompositeDBRRTResult result = composite_planner.plan(problem);
-
-#ifdef DBG_PRINTS
-    std::cout << "CompositeDBRRT planning " << (result.solved ? "succeeded" : "failed")
-              << " in " << result.planning_time << " seconds" << std::endl;
-#endif
-
-    // Convert results to GuidedPlanningResult format
-    if (result.solved && result.trajectories.size() == robots_.size()) {
-        for (size_t i = 0; i < robots_.size(); ++i) {
-            mr_syclop::GuidedPlanningResult guided_result;
-            guided_result.success = true;
-            guided_result.planning_time = result.planning_time;
-            guided_result.robot_index = i;
-            guided_result.path = convertDynobenchTrajectory(result.trajectories[i], robots_[i]);
-            guided_planning_results_.push_back(guided_result);
-
-#ifdef DBG_PRINTS
-            std::cout << "  Robot " << i << ": trajectory with "
-                      << result.trajectories[i].states.size() << " states" << std::endl;
-#endif
-        }
-    } else {
-        // Planning failed - create empty results for each robot
-        for (size_t i = 0; i < robots_.size(); ++i) {
-            mr_syclop::GuidedPlanningResult guided_result;
-            guided_result.success = false;
-            guided_result.planning_time = result.planning_time;
-            guided_result.robot_index = i;
-            guided_result.path = nullptr;
-            guided_planning_results_.push_back(guided_result);
-        }
-    }
-
-#ifdef DBG_PRINTS
-    size_t num_successful = 0;
-    for (const auto& res : guided_planning_results_) {
-        if (res.success) num_successful++;
-    }
-    std::cout << "CompositeDBRRT path computation completed: "
-              << num_successful << "/" << robots_.size()
-              << " robots found paths" << std::endl;
-#endif
-}
-
-std::shared_ptr<oc::PathControl> MRSyCLoPPlanner::convertDynobenchTrajectory(
-    const dynobench::Trajectory& traj,
-    const std::shared_ptr<Robot>& robot)
-{
-    auto si = robot->getSpaceInformation();
-    auto path = std::make_shared<oc::PathControl>(si);
-    auto state_space = si->getStateSpace();
-
-    // Convert states and controls
-    for (size_t i = 0; i < traj.states.size(); ++i) {
-        // Allocate and convert state
-        ob::State* state = si->allocState();
-
-        // Convert Eigen vector to OMPL state
-        size_t idx = 0;
-        if (auto compound = state_space->as<ob::CompoundStateSpace>()) {
-            auto* compound_state = state->as<ob::CompoundState>();
-            for (size_t s = 0; s < compound->getSubspaceCount(); ++s) {
-                auto subspace = compound->getSubspace(s);
-                auto* substate = compound_state->as<ob::State>(s);
-
-                if (subspace->getType() == ob::STATE_SPACE_SO2) {
-                    auto* so2_state = substate->as<ob::SO2StateSpace::StateType>();
-                    so2_state->value = traj.states[i](idx++);
-                } else if (subspace->getType() == ob::STATE_SPACE_REAL_VECTOR) {
-                    auto rv_space = subspace->as<ob::RealVectorStateSpace>();
-                    auto* rv_state = substate->as<ob::RealVectorStateSpace::StateType>();
-                    for (size_t j = 0; j < rv_space->getDimension(); ++j) {
-                        rv_state->values[j] = traj.states[i](idx++);
-                    }
-                }
-            }
-        } else if (auto rv_space = state_space->as<ob::RealVectorStateSpace>()) {
-            auto* rv_state = state->as<ob::RealVectorStateSpace::StateType>();
-            for (size_t j = 0; j < rv_space->getDimension(); ++j) {
-                rv_state->values[j] = traj.states[i](j);
-            }
-        }
-
-        if (i < traj.actions.size()) {
-            // Allocate and convert control
-            oc::Control* control = si->allocControl();
-            auto* rv_control = control->as<oc::RealVectorControlSpace::ControlType>();
-
-            for (size_t j = 0; j < traj.actions[i].size() &&
-                              j < si->getControlSpace()->getDimension(); ++j) {
-                rv_control->values[j] = traj.actions[i](j);
-            }
-
-            // Default timestep duration (should match dynobench model dt)
-            double duration = 0.1;
-            path->append(state, control, duration);
-        } else {
-            // Last state, no control
-            path->append(state);
-        }
-    }
-
-    return path;
-}
 
 void MRSyCLoPPlanner::segmentGuidedPaths()
 {
@@ -991,88 +791,42 @@ PlanningResult MRSyCLoPPlanner::useCompositePlanner(
     auto subproblem_obstacles = getObstaclesInRegion(subproblem_env_min, subproblem_env_max);
     std::cout << "  Subproblem obstacles: " << subproblem_obstacles.size() << std::endl;
 
-    if (config_.guided_planner_method == "db_rrt") {
-        // Use CompositeDBRRT planner for DB-RRT guided planning
-        std::cout << "Using composite DB-RRT planner on subproblem..." << std::endl;
+    // Use CoupledRRT planner (geometric mode)
+    std::cout << "Using coupled RRT planner on subproblem..." << std::endl;
 
-        CompositeDBRRTProblem problem;
-        problem.env_min = subproblem_env_min;
-        problem.env_max = subproblem_env_max;
-        problem.obstacles = subproblem_obstacles;
-        problem.dynobench_obstacles = dynobench_obstacles_;
+    PlanningProblem problem;
+    problem.env_min = subproblem_env_min;
+    problem.env_max = subproblem_env_max;
+    problem.obstacles = subproblem_obstacles;
 
-        for (size_t i = 0; i < robot_indices.size(); ++i) {
-            size_t robot_idx = robot_indices[i];
-            CompositeRobotSpec robot_spec;
-            robot_spec.type = robot_types_[robot_idx];
-            robot_spec.start = subproblem_starts[i];
-            robot_spec.goal = subproblem_goals[i];
-            problem.robots.push_back(robot_spec);
-        }
-
-        CompositeDBRRTPlanner planner(config_.composite_dbrrt_config);
-        CompositeDBRRTResult composite_result = planner.plan(problem);
-
-        std::cout << "Composite DB-RRT planning completed in " << composite_result.planning_time << " seconds" << std::endl;
-        std::cout << "Solution found: " << (composite_result.solved ? "Yes" : "No") << std::endl;
-
-        PlanningResult result;
-        result.solved = composite_result.solved;
-        result.planning_time = composite_result.planning_time;
-        result.path = nullptr;
-
-        if (composite_result.solved && composite_result.trajectories.size() == robot_indices.size()) {
-            for (size_t i = 0; i < robot_indices.size(); ++i) {
-                size_t robot_idx = robot_indices[i];
-                auto path = convertDynobenchTrajectory(composite_result.trajectories[i], robots_[robot_idx]);
-                result.individual_paths.push_back(path);
-
-                std::cout << "  Robot " << robot_idx << ": trajectory with "
-                          << composite_result.trajectories[i].states.size() << " states" << std::endl;
-            }
-        } else if (!composite_result.solved) {
-            std::cout << "No solution found by composite DB-RRT planner" << std::endl;
-        }
-
-        return result;
-    } else {
-        // Use CoupledRRT planner for non-DB-RRT guided planning (e.g., syclop_rrt)
-        std::cout << "Using coupled RRT planner on subproblem..." << std::endl;
-
-        PlanningProblem problem;
-        problem.env_min = subproblem_env_min;
-        problem.env_max = subproblem_env_max;
-        problem.obstacles = subproblem_obstacles;
-
-        for (size_t i = 0; i < robot_indices.size(); ++i) {
-            size_t robot_idx = robot_indices[i];
-            RobotSpec robot_spec;
-            robot_spec.type = robot_types_[robot_idx];
-            robot_spec.start = subproblem_starts[i];
-            robot_spec.goal = subproblem_goals[i];
-            problem.robots.push_back(robot_spec);
-        }
-
-        CoupledRRTPlanner planner(config_.coupled_rrt_config);
-        PlanningResult result = planner.plan(problem);
-
-        std::cout << "Coupled RRT planning completed in " << result.planning_time << " seconds" << std::endl;
-        std::cout << "Solution found: " << (result.solved ? "Yes" : "No") << std::endl;
-
-        if (result.solved) {
-            for (size_t i = 0; i < robot_indices.size(); ++i) {
-                size_t robot_idx = robot_indices[i];
-                if (i < result.individual_paths.size() && result.individual_paths[i]) {
-                    std::cout << "  Robot " << robot_idx << ": trajectory with "
-                              << result.individual_paths[i]->getStateCount() << " states" << std::endl;
-                }
-            }
-        } else {
-            std::cout << "No solution found by coupled RRT planner" << std::endl;
-        }
-
-        return result;
+    for (size_t i = 0; i < robot_indices.size(); ++i) {
+        size_t robot_idx = robot_indices[i];
+        RobotSpec robot_spec;
+        robot_spec.type = robot_types_[robot_idx];
+        robot_spec.start = subproblem_starts[i];
+        robot_spec.goal = subproblem_goals[i];
+        problem.robots.push_back(robot_spec);
     }
+
+    CoupledRRTPlanner planner(config_.coupled_rrt_config);
+    PlanningResult result = planner.plan(problem);
+
+    std::cout << "Coupled RRT planning completed in " << result.planning_time << " seconds" << std::endl;
+    std::cout << "Solution found: " << (result.solved ? "Yes" : "No") << std::endl;
+
+    if (result.solved) {
+        for (size_t i = 0; i < robot_indices.size(); ++i) {
+            size_t robot_idx = robot_indices[i];
+            if (i < result.individual_paths.size() && result.individual_paths[i]) {
+                std::cout << "  Robot " << robot_idx << ": trajectory with "
+                          << result.individual_paths[i]->getStateCount() << " states" << std::endl;
+            }
+        }
+    } else {
+        std::cout << "No solution found by coupled RRT planner" << std::endl;
+    }
+
+    return result;
 }
 
 bool MRSyCLoPPlanner::resolveCollisions()
@@ -2413,12 +2167,10 @@ bool MRSyCLoPPlanner::refineExpandedRegion(
 
     {
         ScopedFunctionTimer guided_timer(timing_log_, "refineExpandedRegion.guidedPlanning");
-        auto guided_planner = createGuidedPlannerWithDBRRT(
+        auto guided_planner = createGuidedPlanner(
             config_.guided_planner_method,
             config_.guided_planner_config,
-            config_.db_rrt_config,
-            collision_manager_,
-            dynobench_obstacles_);
+            collision_manager_);
 
         for (size_t i = 0; i < replan_robot_indices.size(); ++i) {
             size_t robot_idx = replan_robot_indices[i];
@@ -3322,11 +3074,6 @@ int main(int argc, char* argv[]) {
             config.seed = cfg["seed"].as<int>();
         }
 
-        // Load kinodynamics flag
-        if (cfg["use_kinodynamics"]) {
-            config.use_kinodynamics = cfg["use_kinodynamics"].as<bool>();
-        }
-
         // Set the random seed
         if (config.seed >= 0) {
             std::cout << "  Setting random seed to: " << config.seed << std::endl;
@@ -3392,102 +3139,6 @@ int main(int argc, char* argv[]) {
             if (gp["use_regional_nn"]) {
                 config.guided_planner_config.use_regional_nn = gp["use_regional_nn"].as<bool>();
             }
-
-            // Parse DB-RRT specific config
-            if (gp["db_rrt"]) {
-                const YAML::Node& db = gp["db_rrt"];
-                if (db["motions_file"]) {
-                    config.db_rrt_config.motions_file = db["motions_file"].as<std::string>();
-                }
-                if (db["models_base_path"]) {
-                    config.db_rrt_config.models_base_path = db["models_base_path"].as<std::string>();
-                }
-                if (db["timelimit"]) {
-                    config.db_rrt_config.timelimit = db["timelimit"].as<double>();
-                }
-                if (db["max_expands"]) {
-                    config.db_rrt_config.max_expands = db["max_expands"].as<int>();
-                }
-                if (db["goal_region"]) {
-                    config.db_rrt_config.goal_region = db["goal_region"].as<double>();
-                }
-                if (db["delta"]) {
-                    config.db_rrt_config.delta = db["delta"].as<double>();
-                }
-                if (db["goal_bias"]) {
-                    config.db_rrt_config.goal_bias = db["goal_bias"].as<double>();
-                }
-                if (db["max_motions"]) {
-                    config.db_rrt_config.max_motions = db["max_motions"].as<int>();
-                }
-                if (db["seed"]) {
-                    config.db_rrt_config.seed = db["seed"].as<int>();
-                }
-                if (db["do_optimization"]) {
-                    config.db_rrt_config.do_optimization = db["do_optimization"].as<bool>();
-                }
-                if (db["use_nigh_nn"]) {
-                    config.db_rrt_config.use_nigh_nn = db["use_nigh_nn"].as<bool>();
-                }
-                if (db["debug"]) {
-                    config.db_rrt_config.debug = db["debug"].as<bool>();
-                }
-                if (db["solver_id"]) {
-                    config.db_rrt_config.solver_id = db["solver_id"].as<int>();
-                }
-                if (db["use_region_guidance"]) {
-                    config.db_rrt_config.use_region_guidance = db["use_region_guidance"].as<bool>();
-                }
-                if (db["region_bias"]) {
-                    config.db_rrt_config.region_bias = db["region_bias"].as<double>();
-                }
-            }
-
-            // Parse Composite DB-RRT config (for joint multi-robot planning)
-            if (gp["composite_dbrrt"]) {
-                const YAML::Node& cd = gp["composite_dbrrt"];
-                if (cd["time_limit"]) {
-                    config.composite_dbrrt_config.time_limit = cd["time_limit"].as<double>();
-                }
-                if (cd["delta"]) {
-                    config.composite_dbrrt_config.delta = cd["delta"].as<double>();
-                }
-                if (cd["goal_region"]) {
-                    config.composite_dbrrt_config.goal_region = cd["goal_region"].as<double>();
-                }
-                if (cd["max_motions"]) {
-                    config.composite_dbrrt_config.max_motions = cd["max_motions"].as<size_t>();
-                }
-                if (cd["expansions_per_iter"]) {
-                    config.composite_dbrrt_config.expansions_per_iter = cd["expansions_per_iter"].as<unsigned int>();
-                }
-                if (cd["goal_threshold"]) {
-                    config.composite_dbrrt_config.goal_threshold = cd["goal_threshold"].as<double>();
-                }
-                if (cd["goal_bias"]) {
-                    config.composite_dbrrt_config.goal_bias = cd["goal_bias"].as<double>();
-                }
-                if (cd["require_all_move"]) {
-                    config.composite_dbrrt_config.require_all_move = cd["require_all_move"].as<bool>();
-                }
-                if (cd["models_base_path"]) {
-                    config.composite_dbrrt_config.models_base_path = cd["models_base_path"].as<std::string>();
-                }
-                if (cd["seed"]) {
-                    config.composite_dbrrt_config.seed = cd["seed"].as<int>();
-                }
-                if (cd["debug"]) {
-                    config.composite_dbrrt_config.debug = cd["debug"].as<bool>();
-                }
-                // Parse motion files map
-                if (cd["motion_files"]) {
-                    for (const auto& mf : cd["motion_files"]) {
-                        std::string robot_type = mf.first.as<std::string>();
-                        std::string file_path = mf.second.as<std::string>();
-                        config.composite_dbrrt_config.motion_files[robot_type] = file_path;
-                    }
-                }
-            }
         }
 
         // Set coupled RRT config if needed
@@ -3537,8 +3188,6 @@ int main(int argc, char* argv[]) {
         std::cout << "  MAPF region capacity: " << config.mapf_config.region_capacity << std::endl;
         std::cout << "  Guided planner method: " << config.guided_planner_method << std::endl;
         std::cout << "  Guided planner time per robot: " << config.guided_planner_config.time_per_robot << "s" << std::endl;
-        std::cout << "  DB-RRT motions file: " << config.db_rrt_config.motions_file << std::endl;
-        std::cout << "  DB-RRT models path: " << config.db_rrt_config.models_base_path << std::endl;
         std::cout << "  MAPF max obstacle volume: " << (config.mapf_config.max_obstacle_volume_percent * 100.0) << "%" << std::endl;
 
         // Load problem description

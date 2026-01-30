@@ -1,5 +1,5 @@
-#ifndef MR_SYCLOP_H
-#define MR_SYCLOP_H
+#ifndef MR_SYCLOP_GEOMETRIC_H
+#define MR_SYCLOP_GEOMETRIC_H
 
 #include <ompl/base/spaces/RealVectorStateSpace.h>
 #include <ompl/control/SpaceInformation.h>
@@ -11,12 +11,12 @@
 #include <tuple>
 #include <vector>
 #include <string>
+#include <yaml-cpp/yaml.h>
 
 #include "decomposition.h"
 #include "robots.h"
 #include "coupled_rrt.h"
-#include "guided/guided_planner.h"  // Includes dynobench::Obstacle
-#include "composite_dbrrt.h"        // Composite DB-RRT planner
+#include "guided/guided_planner_base.h"
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
@@ -128,7 +128,6 @@ struct MRSyCLoPConfig {
     double planning_time_limit = 60.0;
     double max_total_time = 0.0;  // Maximum total planning time in seconds (0 = no limit)
     int seed = -1;  // Random seed (-1 for random)
-    bool use_kinodynamics = true;  // If false, use geometric propagation (no dynamics)
 
     // Decomposition output directory (empty string disables saving)
     std::string decomposition_output_dir = "";
@@ -142,8 +141,6 @@ struct MRSyCLoPConfig {
     // Guided planner configuration
     std::string guided_planner_method = "syclop_rrt";
     mr_syclop::GuidedPlannerConfig guided_planner_config;
-    mr_syclop::DBRRTConfig db_rrt_config;  // DB-RRT specific config (for individual planning)
-    CompositeDBRRTConfig composite_dbrrt_config;  // Composite DB-RRT config (for joint planning)
 
     // Segmentation configuration
     int segment_timesteps = 30;  // Number of timesteps per segment
@@ -292,7 +289,7 @@ struct MRSyCLoPResult {
 };
 
 // ============================================================================
-// MRSyCLoPPlanner Class
+// MRSyCLoPPlanner Class (Geometric Version)
 // ============================================================================
 
 class MRSyCLoPPlanner {
@@ -375,24 +372,15 @@ private:
     // Collision manager for obstacles (shared with guided planners)
     std::shared_ptr<fcl::BroadPhaseCollisionManagerf> collision_manager_;
 
-    // Precomputed dynobench obstacles (for DB-RRT solver)
-    std::vector<dynobench::Obstacle> dynobench_obstacles_;
-
     // Hierarchical decomposition tracking
     std::vector<DecompositionCell> decomposition_hierarchy_;  // One cell per initial region
 
     // Helper methods
     void setupDecomposition();
     void setupCollisionManager();
-    void setupDynobenchObstacles();  // Convert FCL obstacles to dynobench format
     void setupRobots();
     void cleanup();
 
-    // Composite DB-RRT planning (joint multi-robot planning)
-    void computeGuidedPathsWithCompositeDBRRT();
-    std::shared_ptr<oc::PathControl> convertDynobenchTrajectory(
-        const dynobench::Trajectory& traj,
-        const std::shared_ptr<Robot>& robot);
     std::vector<fcl::CollisionObjectf*> getObstaclesInRegion(
         const std::vector<double>& region_min,
         const std::vector<double>& region_max) const;
@@ -404,7 +392,7 @@ private:
                                size_t robot_idx_2, const ob::State* state_2,
                                size_t& part_1, size_t& part_2) const;
 
-    // Collision resolution strategies (old stubs - will be removed/updated)
+    // Collision resolution strategies
     void updateDecomposition();
     void expandSubproblem();
     PlanningResult useCompositePlanner(
@@ -515,4 +503,4 @@ private:
     YAML::Node serializeCellRecursive(const DecompositionCell& cell) const;
 };
 
-#endif // MR_SYCLOP_H
+#endif // MR_SYCLOP_GEOMETRIC_H

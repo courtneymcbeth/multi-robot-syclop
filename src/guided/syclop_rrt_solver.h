@@ -1,7 +1,7 @@
 #ifndef SYCLOP_RRT_SOLVER_H
 #define SYCLOP_RRT_SOLVER_H
 
-#include "guided_planner.h"
+#include "guided_planner_base.h"
 #include <ompl/control/planners/syclop/SyclopRRT.h>
 #include <fcl/fcl.h>
 #include <memory>

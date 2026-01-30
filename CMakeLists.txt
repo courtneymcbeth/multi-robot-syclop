@@ -126,6 +126,48 @@ target_include_directories(mr_syclop PUBLIC
 # Force debug flags for mr_syclop regardless of build type
 target_compile_options(mr_syclop PRIVATE -g -O0)
 
+## guided_planner_geometric (no dynobench/dbrrt dependency)
+
+add_library(guided_planner_geometric
+  src/guided/guided_planner_geometric.cpp
+  src/guided/syclop_rrt_solver.cpp
+)
+target_link_libraries(guided_planner_geometric
+  PUBLIC ompl
+  PUBLIC ${FCL_LIBRARIES}
+  PUBLIC motion_planning_common
+)
+target_include_directories(guided_planner_geometric PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/guided
+  ${CMAKE_SOURCE_DIR}/Multi-Robot-OMPL/src
+  ${CMAKE_BINARY_DIR}/Multi-Robot-OMPL/src
+  ${FCL_INCLUDE_DIRS}
+)
+
+## mr_syclop_geometric (geometric-only, no dynobench/dbrrt dependency)
+
+add_executable(mr_syclop_geometric
+  src/mr_syclop_geometric.cpp
+  src/decomposition.cpp
+)
+target_link_libraries(mr_syclop_geometric
+  motion_planning_common
+  coupled_rrt_lib
+  mapf_solver_lib
+  guided_planner_geometric
+  ${Boost_LIBRARIES}
+  ${YAML_LIBRARIES}
+  ompl
+  ${FCL_LIBRARIES}
+)
+target_include_directories(mr_syclop_geometric PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+  ${YAML_INCLUDE_DIRS}
+  ${FCL_INCLUDE_DIRS}
+)
+target_compile_options(mr_syclop_geometric PRIVATE -g -O0)
+
 ## srrt
 
 add_executable(srrt
