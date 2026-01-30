@@ -23,6 +23,46 @@ namespace po = boost::program_options;
 #define DBG_PRINTS
 #include "planresult.hpp"
 
+namespace {
+
+// Linear interpolation propagator for geometric planning.
+// Interprets controls as velocity in position space, ignoring actual robot dynamics.
+// Moves the robot linearly: new_pos = pos + ctrl * duration.
+class LinearInterpolationPropagator : public oc::StatePropagator {
+public:
+    LinearInterpolationPropagator(const oc::SpaceInformationPtr& si,
+                                   std::shared_ptr<Robot> robot)
+        : oc::StatePropagator(si), robot_(robot) {}
+
+    void propagate(const ob::State* state, const oc::Control* control,
+                   double duration, ob::State* result) const override {
+        // Copy full state first (preserves non-position dims like theta, velocity)
+        si_->getStateSpace()->copyState(result, state);
+
+        // Get current position via robot interface
+        fcl::Transform3f transform = robot_->getTransform(state);
+        fcl::Vector3f pos = transform.translation();
+
+        // Interpret control as velocity in position space
+        const double* ctrl =
+            control->as<oc::RealVectorControlSpace::ControlType>()->values;
+
+        pos[0] += static_cast<float>(ctrl[0] * duration);
+        pos[1] += static_cast<float>(ctrl[1] * duration);
+
+        // Write new position back via robot interface
+        robot_->setPosition(result, pos);
+    }
+
+    bool canPropagateBackward() const override { return false; }
+    bool canSteer() const override { return false; }
+
+private:
+    std::shared_ptr<Robot> robot_;
+};
+
+}  // namespace
+
 // ============================================================================
 // MRSyCLoPPlanner Implementation
 // ============================================================================
@@ -162,8 +202,8 @@ void MRSyCLoPPlanner::setupRobots()
         auto robot = create_robot(robot_types_[i], position_bounds);
         auto si = robot->getSpaceInformation();
 
-        // Geometric mode: use robot's kinematics for propagation + obstacle validity checking
-        si->setStatePropagator(std::make_shared<RobotStatePropagator>(si, robot));
+        // Geometric mode: linear interpolation propagator (ignores actual dynamics)
+        si->setStatePropagator(std::make_shared<LinearInterpolationPropagator>(si, robot));
         si->setStateValidityChecker(
             std::make_shared<fclStateValidityChecker>(si, collision_manager_, robot));
 
