@@ -10,6 +10,8 @@ decomposition_region_length: 5
 # Path segmentation configuration
 segment_timesteps: 30      # Number of timesteps per segment
 
+use_kinodynamics: false
+
 # MAPF Configuration
 mapf:
   method: "cbs"           # Options: "decoupled", "astar", "cbs"
@@ -17,15 +19,15 @@ mapf:
   max_obstacle_volume_percent: 0.5  # Maximum percentage of obstacle volume in a region before it is considered blocked
 
 # Guided Planner Configuration
-# guided_planner:
-#   time_per_robot: 10.0      # Time budget per robot (seconds)
-#   goal_threshold: 0.5       # Goal tolerance distance (solutions within this distance are considered successful)
-#   num_free_volume_samples: 100000
-#   num_region_expansions: 100
-#   num_tree_expansions: 1
-#   prob_abandon_lead_early: 0.25
-#   prob_shortest_path: 0.95
-#   use_regional_nn: true
+guided_planner:
+  num_free_volume_samples: 100  # Reduced from 100000 default to speed up SyclopRRT setup
+  time_per_robot: 1.0      # Time budget per robot (seconds)
+  goal_threshold: 0.5       # Goal tolerance distance (solutions within this distance are considered successful)
+  num_region_expansions: 100
+  num_tree_expansions: 1
+  prob_abandon_lead_early: 0.25
+  prob_shortest_path: 0.95
+  use_regional_nn: true
 #   debug: false
 
 #   # Composite DB-RRT configuration (used for collision resolution)

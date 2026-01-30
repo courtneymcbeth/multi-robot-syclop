@@ -29,6 +29,10 @@ planners:
     executable: ../build/arc
     config: ../examples/planner_cfgs/arc_config.yaml
 
+  mr_syclop_geometric:
+    executable: ../build/mr_syclop_geometric
+    config: ../examples/planner_cfgs/mr_syclop_config.yaml
+
   mr_syclop:
     executable: ../build/mr_syclop
     config: ../examples/planner_cfgs/mr_syclop_config.yaml
