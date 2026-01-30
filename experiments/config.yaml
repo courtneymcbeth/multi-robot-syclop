@@ -37,11 +37,19 @@ planners:
     executable: ../build/mr_syclop
     config: ../examples/planner_cfgs/mr_syclop_config.yaml
 
-  coupled_rrt:
+  coupled_rrt_geometric:
+    executable: ../build/coupled_rrt
+    config: ../examples/planner_cfgs/coupled_rrt_geometric_config.yaml
+
+  coupled_rrt_kinodynamic:
     executable: ../build/coupled_rrt
     config: ../examples/planner_cfgs/coupled_rrt_config.yaml
 
-  decoupled_rrt:
+  decoupled_rrt_geometric:
+    executable: ../build/decoupled_rrt
+    config: ../examples/planner_cfgs/decoupled_rrt_geometric_config.yaml
+
+  decoupled_rrt_kinodynamic:
     executable: ../build/decoupled_rrt
     config: ../examples/planner_cfgs/decoupled_rrt_config.yaml
 

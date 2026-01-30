@@ -1,0 +1,7 @@
+# Configuration file for decoupled_rrt (Prioritized Planning) - geometric mode
+
+# Goal distance threshold - robots must reach within this distance of their goals
+goal_threshold: 0.5
+
+# Use geometric planning instead of kinodynamic
+use_geometric: true

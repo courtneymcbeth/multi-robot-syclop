@@ -1,0 +1,4 @@
+# Configuration file for coupled_rrt planner (geometric mode)
+
+goal_threshold: 1.0           # Distance threshold to consider goal reached
+use_geometric: true            # Use geometric planning (RRTConnect) instead of kinodynamic

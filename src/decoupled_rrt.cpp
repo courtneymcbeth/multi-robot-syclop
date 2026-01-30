@@ -1,23 +1,33 @@
 /*********************************************************************
-* Decoupled Kinodynamic RRT (Prioritized Planning) for Multi-Robot Planning
+* Decoupled RRT (Prioritized Planning) for Multi-Robot Planning
 *
 * This planner uses OMPL's Multi-Robot Prioritized Planning (PP) framework
 * where robots are assigned priorities and planned sequentially. Lower
 * priority robots treat higher priority robots as dynamic obstacles.
+*
+* Supports both geometric and kinodynamic planning modes.
 *********************************************************************/
 
 // Multi-Robot OMPL headers
 #include <ompl/multirobot/control/SpaceInformation.h>
 #include <ompl/multirobot/base/ProblemDefinition.h>
 #include <ompl/multirobot/control/planners/pp/PP.h>
+#include <ompl/multirobot/geometric/planners/pp/PP.h>
+#include <ompl/multirobot/geometric/PlanGeometric.h>
 
-// OMPL headers
+// OMPL headers - Control (Kinodynamic)
 #include <ompl/control/SpaceInformation.h>
 #include <ompl/control/ControlSpace.h>
 #include <ompl/control/spaces/RealVectorControlSpace.h>
 #include <ompl/control/planners/rrt/RRT.h>
 #include <ompl/control/PathControl.h>
 #include <ompl/control/StatePropagator.h>
+
+// OMPL headers - Geometric
+#include <ompl/geometric/planners/rrt/RRT.h>
+#include <ompl/geometric/PathGeometric.h>
+
+// OMPL headers - Base
 #include <ompl/base/StateSpace.h>
 #include <ompl/base/spaces/SE2StateSpace.h>
 #include <ompl/base/spaces/RealVectorStateSpace.h>
@@ -49,8 +59,10 @@
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
+namespace og = ompl::geometric;
 namespace omrb = ompl::multirobot::base;
 namespace omrc = ompl::multirobot::control;
+namespace omrg = ompl::multirobot::geometric;
 namespace po = boost::program_options;
 
 // ============================================================================
@@ -251,6 +263,7 @@ int main(int argc, char** argv)
     int max_control_duration = 10;
     double propagation_step_size = 0.1;
     int seed = -1;
+    bool use_geometric = false;
 
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -258,7 +271,8 @@ int main(int argc, char** argv)
         ("input,i", po::value<std::string>(&inputFile)->required(), "Input YAML file")
         ("output,o", po::value<std::string>(&outputFile)->required(), "Output YAML file")
         ("cfg,c", po::value<std::string>(&configFile), "Configuration YAML file")
-        ("timelimit,t", po::value<double>(&timelimit)->default_value(60.0), "Time limit in seconds");
+        ("timelimit,t", po::value<double>(&timelimit)->default_value(60.0), "Time limit in seconds")
+        ("geometric,g", po::bool_switch(&use_geometric), "Use geometric planning (default: kinodynamic)");
 
     po::variables_map vm;
     try {
@@ -295,6 +309,9 @@ int main(int argc, char** argv)
             if (cfg["seed"]) {
                 seed = cfg["seed"].as<int>();
             }
+            if (cfg["use_geometric"]) {
+                use_geometric = cfg["use_geometric"].as<bool>();
+            }
         } catch (const YAML::Exception& e) {
             std::cerr << "ERROR loading config file: " << e.what() << std::endl;
             return 1;
@@ -302,6 +319,7 @@ int main(int argc, char** argv)
     }
 
     std::cout << "Decoupled RRT (Prioritized Planning) for Multi-Robot Systems" << std::endl;
+    std::cout << "Mode: " << (use_geometric ? "GEOMETRIC" : "KINODYNAMIC") << std::endl;
     std::cout << "=============================================================" << std::endl;
 
     // Set the random seed
@@ -365,7 +383,16 @@ int main(int argc, char** argv)
     std::cout << "Loaded " << obstacles.size() << " obstacles" << std::endl;
 
     // Create multi-robot space information and problem definition
-    auto ma_si = std::make_shared<omrc::SpaceInformation>();
+    // The base pointer is used for the problem definition and geometric PP;
+    // the control pointer is additionally needed for kinodynamic PP.
+    std::shared_ptr<omrb::SpaceInformation> ma_si;
+    std::shared_ptr<omrc::SpaceInformation> ma_si_control;
+    if (use_geometric) {
+        ma_si = std::make_shared<omrb::SpaceInformation>();
+    } else {
+        ma_si_control = std::make_shared<omrc::SpaceInformation>();
+        ma_si = ma_si_control;
+    }
     auto ma_pdef = std::make_shared<omrb::ProblemDefinition>(ma_si);
 
     // Create robots from YAML
@@ -373,6 +400,8 @@ int main(int argc, char** argv)
     std::vector<std::shared_ptr<Robot>> robots;
     std::vector<ob::State*> start_states;
     std::vector<ob::State*> goal_states;
+    // Track the per-robot SI used for planning (geometric or kinodynamic)
+    std::vector<ob::SpaceInformationPtr> robot_sis;
     int robot_idx = 0;
 
     for (const auto& robot_node : env["robots"]) {
@@ -383,33 +412,54 @@ int main(int argc, char** argv)
         auto robot = create_robot(robotType, position_bounds);
         robots.push_back(robot);
 
-        // Get robot's control space information
-        auto robot_si = robot->getSpaceInformation();
-        auto robot_state_space = robot_si->getStateSpace();
-        auto robot_control_space = robot_si->getControlSpace();
+        // Get robot's state space (shared between both modes)
+        auto robot_state_space = robot->getSpaceInformation()->getStateSpace();
 
         // Set robot name
         std::string robot_name = "Robot " + std::to_string(robot_idx);
         robot_state_space->setName(robot_name);
 
-        // Set state propagator using the robot's dynamics
-        auto propagator = std::make_shared<IndividualStatePropagator>(robot_si, robot);
-        robot_si->setStatePropagator(propagator);
+        // Create the per-robot SpaceInformation based on mode
+        ob::SpaceInformationPtr individual_si;
 
-        // Set state validity checker with dynamic obstacle support
-        auto validity_checker = std::make_shared<IndividualStateValidityChecker>(
-            robot_si, col_mng_environment, robot);
-        robot_si->setStateValidityChecker(validity_checker);
+        if (use_geometric) {
+            // ===== GEOMETRIC MODE =====
+            // Create geometric SpaceInformation (state-only, no control space)
+            individual_si = std::make_shared<ob::SpaceInformation>(robot_state_space);
 
-        // Set propagation parameters
-        robot_si->setPropagationStepSize(propagation_step_size);
-        robot_si->setMinMaxControlDuration(min_control_duration, max_control_duration);
+            // Set state validity checker with dynamic obstacle support
+            auto validity_checker = std::make_shared<IndividualStateValidityChecker>(
+                individual_si, col_mng_environment, robot);
+            individual_si->setStateValidityChecker(validity_checker);
 
-        // Setup the space information
-        robot_si->setup();
+            // Setup the space information
+            individual_si->setup();
+        } else {
+            // ===== KINODYNAMIC MODE (default) =====
+            auto robot_si = robot->getSpaceInformation();
+            individual_si = robot_si;
+
+            // Set state propagator using the robot's dynamics
+            auto propagator = std::make_shared<IndividualStatePropagator>(robot_si, robot);
+            robot_si->setStatePropagator(propagator);
+
+            // Set state validity checker with dynamic obstacle support
+            auto validity_checker = std::make_shared<IndividualStateValidityChecker>(
+                robot_si, col_mng_environment, robot);
+            robot_si->setStateValidityChecker(validity_checker);
+
+            // Set propagation parameters
+            robot_si->setPropagationStepSize(propagation_step_size);
+            robot_si->setMinMaxControlDuration(min_control_duration, max_control_duration);
+
+            // Setup the space information
+            robot_si->setup();
+        }
+
+        robot_sis.push_back(individual_si);
 
         // Register this robot in the global registry so areStatesValid() can look it up
-        g_robot_registry[robot_si.get()] = robot;
+        g_robot_registry[individual_si.get()] = robot;
 
         // Parse start state
         const auto& start_vec = robot_node["start"];
@@ -430,13 +480,18 @@ int main(int argc, char** argv)
         goal_states.push_back(goal_state);
 
         // Create problem definition for this robot
-        auto pdef = std::make_shared<ob::ProblemDefinition>(robot_si);
+        auto pdef = std::make_shared<ob::ProblemDefinition>(individual_si);
         pdef->addStartState(start_state);
         pdef->setGoal(std::make_shared<IndividualGoalCondition>(
-            robot_si, goal_state, goal_threshold));
+            individual_si, goal_state, goal_threshold));
 
         // Add to multi-robot space information and problem definition
-        ma_si->addIndividual(robot_si);
+        if (use_geometric) {
+            ma_si->addIndividual(individual_si);
+        } else {
+            ma_si_control->addIndividual(
+                std::static_pointer_cast<oc::SpaceInformation>(individual_si));
+        }
         ma_pdef->addIndividual(pdef);
 
         std::cout << "    Start: (" << start_se2->getX() << ", " << start_se2->getY() << ")" << std::endl;
@@ -452,22 +507,60 @@ int main(int argc, char** argv)
     ma_si->lock();
     ma_pdef->lock();
 
-    // Set planner allocator
-    ma_si->setPlannerAllocator(plannerAllocator);
-
-    // Create PP planner
-    auto planner = std::make_shared<omrc::PP>(ma_si);
-    planner->setProblemDefinition(ma_pdef);
-
     std::cout << "Planner configured. Starting search..." << std::endl;
     std::cout << "  Goal threshold: " << goal_threshold << std::endl;
-    std::cout << "  Propagation step size: " << propagation_step_size << std::endl;
-    std::cout << "  Control duration: [" << min_control_duration << ", " << max_control_duration << "]" << std::endl;
+    if (!use_geometric) {
+        std::cout << "  Propagation step size: " << propagation_step_size << std::endl;
+        std::cout << "  Control duration: [" << min_control_duration << ", " << max_control_duration << "]" << std::endl;
+    }
     std::cout << "  Total time limit: " << timelimit << " seconds" << std::endl;
 
     // Solve
     auto start_time = std::chrono::steady_clock::now();
-    bool solved = planner->as<omrb::Planner>()->solve(timelimit);
+    bool solved = false;
+
+    // Paths produced by geometric PP (kept alive so dynamic obstacle pointers remain valid)
+    std::vector<og::PathGeometricPtr> geometric_paths;
+
+    if (use_geometric) {
+        // ===== GEOMETRIC MODE: Manual PP loop =====
+        // We implement the prioritized planning loop directly instead of using
+        // omrg::PP because the library has a use-after-free bug: it stores raw
+        // state pointers as dynamic obstacles from a path that is then destroyed.
+        solved = true;
+        auto ptc = ob::timedPlannerTerminationCondition(timelimit);
+        for (int r = 0; r < num_robots; ++r) {
+            auto rrt = std::make_shared<og::RRT>(robot_sis[r], true);
+            rrt->setProblemDefinition(ma_pdef->getIndividual(r));
+            bool robot_solved = rrt->solve(ptc);
+            if (robot_solved) {
+                auto path = std::make_shared<og::PathGeometric>(
+                    *rrt->getProblemDefinition()->getSolutionPath()->as<og::PathGeometric>());
+                geometric_paths.push_back(path);
+
+                // Add path states as dynamic obstacles for subsequent robots,
+                // cloning each state so pointers remain valid independently
+                for (int r2 = r + 1; r2 < num_robots; ++r2) {
+                    for (size_t t = 0; t < path->getStateCount(); ++t) {
+                        auto cloned = robot_sis[r]->cloneState(path->getState(t));
+                        ma_si->getIndividual(r2)->addDynamicObstacle(
+                            static_cast<double>(t), robot_sis[r], cloned);
+                    }
+                }
+            } else {
+                solved = false;
+                break;
+            }
+            rrt->clear();
+        }
+    } else {
+        // ===== KINODYNAMIC MODE: Use omrc::PP =====
+        ma_si_control->setPlannerAllocator(plannerAllocator);
+        auto planner = std::make_shared<omrc::PP>(ma_si_control);
+        planner->setProblemDefinition(ma_pdef);
+        solved = planner->solve(ob::timedPlannerTerminationCondition(timelimit));
+    }
+
     auto end_time = std::chrono::steady_clock::now();
     double planning_time = std::chrono::duration<double>(end_time - start_time).count();
 
@@ -482,64 +575,111 @@ int main(int argc, char** argv)
     if (solved) {
         std::cout << "Extracting solution paths..." << std::endl;
 
-        // Get solution plan
-        omrb::PlanPtr solution = ma_pdef->getSolutionPlan();
-        auto control_plan = solution->as<omrc::PlanControl>();
+        // Get solution plan (only needed for kinodynamic mode)
+        omrb::PlanPtr solution;
+        if (!use_geometric) {
+            solution = ma_pdef->getSolutionPlan();
+        }
+
+        // Collect per-robot state sequences for validation
+        // Each inner vector holds pointers to the states along that robot's path
+        std::vector<std::vector<const ob::State*>> all_robot_states(num_robots);
 
         // Extract paths for each robot
         YAML::Node result;
-        for (int r = 0; r < num_robots; ++r) {
-            YAML::Node robot_data;
 
-            // Get the path for this robot
-            auto robot_path = control_plan->getPath(r);
+        if (use_geometric) {
+            // ===== GEOMETRIC PATH EXTRACTION =====
+            for (int r = 0; r < num_robots && r < static_cast<int>(geometric_paths.size()); ++r) {
+                YAML::Node robot_data;
 
-            if (robot_path) {
-                // Interpolate to get smoother path
-                robot_path->interpolate();
+                auto& robot_path = geometric_paths[r];
 
-                std::cout << "  Robot " << r << ": " << robot_path->getStateCount()
-                          << " states, " << robot_path->getControlCount() << " controls" << std::endl;
+                if (robot_path) {
+                    robot_path->interpolate();
 
-                // Extract states
-                YAML::Node states_node;
-                for (size_t i = 0; i < robot_path->getStateCount(); ++i) {
-                    const ob::State* robot_state = robot_path->getState(i);
-                    const ob::SE2StateSpace::StateType* se2_state =
-                        robot_state->as<ob::SE2StateSpace::StateType>();
+                    std::cout << "  Robot " << r << ": " << robot_path->getStateCount()
+                              << " states" << std::endl;
 
-                    YAML::Node state_node;
-                    state_node.push_back(se2_state->getX());
-                    state_node.push_back(se2_state->getY());
-                    state_node.push_back(se2_state->getYaw());
-                    states_node.push_back(state_node);
-                }
-                robot_data["states"] = states_node;
+                    // Extract states
+                    YAML::Node states_node;
+                    for (size_t i = 0; i < robot_path->getStateCount(); ++i) {
+                        const ob::State* robot_state = robot_path->getState(i);
+                        all_robot_states[r].push_back(robot_state);
 
-                // Extract controls
-                YAML::Node actions_node;
-                for (size_t i = 0; i < robot_path->getControlCount(); ++i) {
-                    oc::Control* robot_control = robot_path->getControl(i);
-                    auto robot_control_space = robots[r]->getSpaceInformation()->getControlSpace();
-                    const size_t dim = robot_control_space->getDimension();
+                        const ob::SE2StateSpace::StateType* se2_state =
+                            robot_state->as<ob::SE2StateSpace::StateType>();
 
-                    YAML::Node action_node;
-                    for (size_t d = 0; d < dim; ++d) {
-                        double* address = robot_control_space->getValueAddressAtIndex(robot_control, d);
-                        action_node.push_back(*address);
+                        YAML::Node state_node;
+                        state_node.push_back(se2_state->getX());
+                        state_node.push_back(se2_state->getY());
+                        state_node.push_back(se2_state->getYaw());
+                        states_node.push_back(state_node);
                     }
-                    actions_node.push_back(action_node);
+                    robot_data["states"] = states_node;
                 }
-                robot_data["actions"] = actions_node;
+
+                result.push_back(robot_data);
             }
+        } else {
+            // ===== KINODYNAMIC PATH EXTRACTION =====
+            auto control_plan = solution->as<omrc::PlanControl>();
 
-            result.push_back(robot_data);
+            for (int r = 0; r < num_robots; ++r) {
+                YAML::Node robot_data;
+
+                auto robot_path = control_plan->getPath(r);
+
+                if (robot_path) {
+                    robot_path->interpolate();
+
+                    std::cout << "  Robot " << r << ": " << robot_path->getStateCount()
+                              << " states, " << robot_path->getControlCount() << " controls" << std::endl;
+
+                    // Extract states
+                    YAML::Node states_node;
+                    for (size_t i = 0; i < robot_path->getStateCount(); ++i) {
+                        const ob::State* robot_state = robot_path->getState(i);
+                        all_robot_states[r].push_back(robot_state);
+
+                        const ob::SE2StateSpace::StateType* se2_state =
+                            robot_state->as<ob::SE2StateSpace::StateType>();
+
+                        YAML::Node state_node;
+                        state_node.push_back(se2_state->getX());
+                        state_node.push_back(se2_state->getY());
+                        state_node.push_back(se2_state->getYaw());
+                        states_node.push_back(state_node);
+                    }
+                    robot_data["states"] = states_node;
+
+                    // Extract controls
+                    YAML::Node actions_node;
+                    for (size_t i = 0; i < robot_path->getControlCount(); ++i) {
+                        oc::Control* robot_control = robot_path->getControl(i);
+                        auto robot_control_space = robots[r]->getSpaceInformation()->getControlSpace();
+                        const size_t dim = robot_control_space->getDimension();
+
+                        YAML::Node action_node;
+                        for (size_t d = 0; d < dim; ++d) {
+                            double* address = robot_control_space->getValueAddressAtIndex(robot_control, d);
+                            action_node.push_back(*address);
+                        }
+                        actions_node.push_back(action_node);
+                    }
+                    robot_data["actions"] = actions_node;
+                }
+
+                result.push_back(robot_data);
+            }
         }
-        output["result"] = result;
 
+        output["result"] = result;
         std::cout << "Solution extracted successfully" << std::endl;
 
         // Validate no inter-robot collisions along the paths
+        // This validation is the same for both geometric and kinodynamic modes
+        // since we collected state pointers into all_robot_states above
         std::cout << "Validating solution for inter-robot collisions..." << std::endl;
         bool collision_free = true;
         int collision_robot1 = -1, collision_robot2 = -1;
@@ -547,30 +687,27 @@ int main(int argc, char** argv)
 
         // Find maximum number of states across all paths
         size_t max_states = 0;
-        std::vector<std::shared_ptr<oc::PathControl>> robot_paths;
         for (int r = 0; r < num_robots; ++r) {
-            auto path = control_plan->getPath(r);
-            robot_paths.push_back(path);
-            if (path && path->getStateCount() > max_states) {
-                max_states = path->getStateCount();
+            if (all_robot_states[r].size() > max_states) {
+                max_states = all_robot_states[r].size();
             }
         }
 
         // Check all robot pairs at each time step
         for (size_t t = 0; t < max_states && collision_free; ++t) {
             for (int r1 = 0; r1 < num_robots && collision_free; ++r1) {
-                if (!robot_paths[r1]) continue;
+                if (all_robot_states[r1].empty()) continue;
 
                 // Get state for robot r1 (clamp to last state if path ended)
-                size_t idx1 = std::min(t, robot_paths[r1]->getStateCount() - 1);
-                const ob::State* state1 = robot_paths[r1]->getState(idx1);
+                size_t idx1 = std::min(t, all_robot_states[r1].size() - 1);
+                const ob::State* state1 = all_robot_states[r1][idx1];
 
                 for (int r2 = r1 + 1; r2 < num_robots && collision_free; ++r2) {
-                    if (!robot_paths[r2]) continue;
+                    if (all_robot_states[r2].empty()) continue;
 
                     // Get state for robot r2 (clamp to last state if path ended)
-                    size_t idx2 = std::min(t, robot_paths[r2]->getStateCount() - 1);
-                    const ob::State* state2 = robot_paths[r2]->getState(idx2);
+                    size_t idx2 = std::min(t, all_robot_states[r2].size() - 1);
+                    const ob::State* state2 = all_robot_states[r2][idx2];
 
                     // Check collision between all parts of robot r1 and r2
                     for (size_t part_i = 0; part_i < robots[r1]->numParts() && collision_free; ++part_i) {
@@ -641,11 +778,11 @@ int main(int argc, char** argv)
     }
 
     for (size_t i = 0; i < start_states.size(); ++i) {
-        robots[i]->getSpaceInformation()->freeState(start_states[i]);
+        robot_sis[i]->freeState(start_states[i]);
     }
 
     for (size_t i = 0; i < goal_states.size(); ++i) {
-        robots[i]->getSpaceInformation()->freeState(goal_states[i]);
+        robot_sis[i]->freeState(goal_states[i]);
     }
 
     std::cout << "Done!" << std::endl;
