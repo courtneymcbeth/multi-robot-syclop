@@ -225,11 +225,20 @@ def run_planner(executable, problem_file, output_file, config_file, timeout, log
     Returns:
         dict with keys: solved, planning_time, timed_out, error, failure_reason, stdout, stderr
     """
+    # Resolve all paths to absolute so they work regardless of cwd
+    executable = str(Path(executable).resolve())
+    problem_file = str(Path(problem_file).resolve())
+    output_file = str(Path(output_file).resolve())
+    config_file = str(Path(config_file).resolve())
+
+    # Run from the project root so relative paths in configs (e.g. db-CBS/...) resolve correctly
+    project_root = str(Path(__file__).resolve().parent.parent)
+
     cmd = [
         executable,
-        '-i', str(problem_file),
-        '-o', str(output_file),
-        '-c', str(config_file),
+        '-i', problem_file,
+        '-o', output_file,
+        '-c', config_file,
         '-t', str(timeout)
     ]
 
@@ -248,7 +257,8 @@ def run_planner(executable, problem_file, output_file, config_file, timeout, log
             cmd,
             timeout=timeout + 30,  # Extra buffer for cleanup
             capture_output=True,
-            text=True
+            text=True,
+            cwd=project_root
         )
 
         result['stdout'] = proc.stdout

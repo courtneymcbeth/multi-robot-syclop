@@ -10,13 +10,17 @@ decomposition_region_length: 5
 # Path segmentation configuration
 segment_timesteps: 30      # Number of timesteps per segment
 
-use_kinodynamics: false
+use_kinodynamics: true
+
+guided_planner_method: "db_rrt"  # Options: "syclop_rrt", "db_rrt"
 
 # MAPF Configuration
 mapf:
   method: "cbs"           # Options: "decoupled", "astar", "cbs"
   region_capacity: 2      # Maximum robots per region (vertex/edge)
   max_obstacle_volume_percent: 0.5  # Maximum percentage of obstacle volume in a region before it is considered blocked
+
+  
 
 # Guided Planner Configuration
 guided_planner:
@@ -29,6 +33,37 @@ guided_planner:
   prob_shortest_path: 0.95
   use_regional_nn: true
 #   debug: false
+
+  # DB-RRT specific parameters (only used if guided_planner_method: "db_rrt")
+  # Note: When guided_planner_method is "db_rrt", the planner uses CompositeDBRRT
+  # for joint multi-robot planning (configured in composite_dbrrt section below)
+  db_rrt:
+    # Path to motion primitives file
+    motions_file: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+
+    # Path to dynobench models directory (must end with /)
+    models_base_path: "db-CBS/dynoplan/dynobench/models/"
+
+    # Planning parameters
+    timelimit: 10.0           # Time limit in seconds (overridden by time_per_robot)
+    max_expands: 10000        # Maximum tree expansions
+    goal_region: 0.3          # Goal region radius
+    delta: 0.3                # Step size for extension
+    goal_bias: 0.1            # Probability of sampling goal
+    max_motions: 1000         # Maximum motion primitives to load
+    seed: 15
+
+    # Optimization
+    do_optimization: true    # Enable trajectory optimization
+    solver_id: 0              # Trajectory optimizer solver ID
+
+    # Advanced parameters
+    use_nigh_nn: true         # Use nigh nearest neighbor data structure
+    debug: false              # DB-RRT debug output
+
+    # Region guidance
+    use_region_guidance: true # Use region path for guidance
+    region_bias: 0.3          # Bias towards regions in path
 
   # Composite DB-RRT configuration (used for collision resolution)
   composite_dbrrt:
@@ -47,7 +82,7 @@ guided_planner:
     require_all_move: false   # If true, all robots must move in each expansion
 
     # Path to dynobench models directory
-    models_base_path: "../db-CBS/dynoplan/dynobench/models"
+    models_base_path: "db-CBS/dynoplan/dynobench/models"
 
     # Random seed (-1 for random)
     seed: -1
@@ -57,7 +92,7 @@ guided_planner:
 
     # Motion primitive files per robot type
     motion_files:
-      unicycle_first_order_0_sphere: "../db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+      unicycle_first_order_0_sphere: "db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
 
 # Collision resolution configuration
 # Resolution continues until all collisions resolved or a collision exhausts all strategies
