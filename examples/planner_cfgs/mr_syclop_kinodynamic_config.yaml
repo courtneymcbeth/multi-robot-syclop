@@ -1,0 +1,74 @@
+# Multi-Robot SyCLoP Planner Configuration
+
+# Random seed (set to -1 for random, or any positive integer for reproducibility)
+# 31, 33 crash
+seed: -1
+
+# Decomposition region length
+decomposition_region_length: 5
+
+# Path segmentation configuration
+segment_timesteps: 30      # Number of timesteps per segment
+
+use_kinodynamics: false
+
+# MAPF Configuration
+mapf:
+  method: "cbs"           # Options: "decoupled", "astar", "cbs"
+  region_capacity: 2      # Maximum robots per region (vertex/edge)
+  max_obstacle_volume_percent: 0.5  # Maximum percentage of obstacle volume in a region before it is considered blocked
+
+# Guided Planner Configuration
+guided_planner:
+  num_free_volume_samples: 100  # Reduced from 100000 default to speed up SyclopRRT setup
+  time_per_robot: 10.0      # Time budget per robot (seconds)
+  goal_threshold: 0.5       # Goal tolerance distance (solutions within this distance are considered successful)
+  num_region_expansions: 100
+  num_tree_expansions: 1
+  prob_abandon_lead_early: 0.25
+  prob_shortest_path: 0.95
+  use_regional_nn: true
+#   debug: false
+
+  # Composite DB-RRT configuration (used for collision resolution)
+  composite_dbrrt:
+    # Time limit for planning (seconds)
+    time_limit: 120.0
+
+    # Per-robot DB-RRT parameters
+    delta: 0.3                # Motion primitive search radius
+    goal_region: 0.5          # Goal threshold for individual robots
+    max_motions: 1000         # Max primitives to load per robot
+
+    # Composite search parameters
+    expansions_per_iter: 5    # Expansions per iteration
+    goal_threshold: 0.5       # Per-robot goal check threshold
+    goal_bias: 0.1            # Goal bias for sampling
+    require_all_move: false   # If true, all robots must move in each expansion
+
+    # Path to dynobench models directory
+    models_base_path: "../db-CBS/dynoplan/dynobench/models"
+
+    # Random seed (-1 for random)
+    seed: -1
+
+    # Debug output
+    debug: false
+
+    # Motion primitive files per robot type
+    motion_files:
+      unicycle_first_order_0_sphere: "../db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack"
+
+# Collision resolution configuration
+# Resolution continues until all collisions resolved or a collision exhausts all strategies
+collision_resolution:
+  max_decomposition_attempts: 3       # Decomposition refinement levels (0=skip)
+  max_subproblem_expansion_attempts: 3  # Subproblem expansion attempts (0=skip)
+  max_composite_attempts: 1           # Composite planner attempts (0=skip) - final fallback
+  decomposition_subdivision_factor: 2.0
+  recheck_from_prior_segment: true    # If true, start collision re-checking from prior segment start instead of collision timestep
+  escalation_frequency: 3             # After N collisions for same robot pair, increase min expansion layer (0=disable)
+
+# Planning parameters
+max_iterations: 10            # Maximum collision resolution iterations
+segment_duration: 0.5         # Duration of trajectory segments for collision checking (seconds)

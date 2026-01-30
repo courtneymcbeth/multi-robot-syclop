@@ -33,9 +33,13 @@ planners:
     executable: ../build/mr_syclop_geometric
     config: ../examples/planner_cfgs/mr_syclop_config.yaml
 
-  mr_syclop:
+  cipher_geometric:
+    executable: ../build/mr_syclop_geometric
+    config: ../examples/planner_cfgs/mr_syclop_geometricconfig.yaml
+
+  cipher_kinodynamic:
     executable: ../build/mr_syclop
-    config: ../examples/planner_cfgs/mr_syclop_config.yaml
+    config: ../examples/planner_cfgs/mr_syclop_kinodynamic_config.yaml
 
   coupled_rrt_geometric:
     executable: ../build/coupled_rrt

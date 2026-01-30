@@ -25,6 +25,34 @@ import numpy as np
 from aggregate_results import aggregate_results
 from parse_results import parse_results_directory
 
+# Fixed color mapping so each planner always gets the same color across all plots
+PLANNER_COLORS = {
+    'arc': '#1f77b4',
+    'coupled_rrt_geometric': '#ff7f0e',
+    'coupled_rrt_kinodynamic': '#2ca02c',
+    'decoupled_rrt_geometric': '#d62728',
+    'decoupled_rrt_kinodynamic': '#9467bd',
+    'drrt': '#8c564b',
+    'cipher_geometric': '#e377c2',
+    'cipher_kinodynamic': '#7f7f7f',
+    'srrt': '#bcbd22',
+}
+
+def get_planner_colors(data):
+    """Get color mapping for all planners in data, using fixed colors."""
+    all_planners = sorted(set(row['planner'] for row in data))
+    colors = {}
+    # Fallback colors for any planners not in the fixed mapping
+    fallback = plt.cm.tab20(np.linspace(0, 1, 20))
+    fallback_idx = 0
+    for planner in all_planners:
+        if planner in PLANNER_COLORS:
+            colors[planner] = PLANNER_COLORS[planner]
+        else:
+            colors[planner] = fallback[fallback_idx % len(fallback)]
+            fallback_idx += 1
+    return colors
+
 
 def load_aggregated_data(input_path):
     """Load aggregated data from CSV, JSON, or compute from results directory."""
@@ -41,11 +69,15 @@ def load_aggregated_data(input_path):
                         if key in row and row[key]:
                             row[key] = int(row[key])
                     for key in ['success_rate', 'mean_time', 'std_time', 'median_time',
-                               'mean_path_length', 'std_path_length', 'mean_makespan']:
-                        if key in row and row[key]:
-                            try:
-                                row[key] = float(row[key])
-                            except ValueError:
+                               'mean_path_length', 'std_path_length',
+                               'mean_makespan', 'std_makespan']:
+                        if key in row:
+                            if row[key]:
+                                try:
+                                    row[key] = float(row[key])
+                                except ValueError:
+                                    row[key] = None
+                            else:
                                 row[key] = None
                     data.append(row)
             return data
@@ -73,10 +105,7 @@ def plot_success_rate(data, output_dir, by_scenario=True):
     for row in data:
         scenarios[row['scenario']].append(row)
 
-    # Color map for planners
-    all_planners = sorted(set(row['planner'] for row in data))
-    colors = plt.cm.tab10(np.linspace(0, 1, len(all_planners)))
-    planner_colors = dict(zip(all_planners, colors))
+    planner_colors = get_planner_colors(data)
 
     if by_scenario:
         for scenario, scenario_data in scenarios.items():
@@ -152,9 +181,7 @@ def plot_planning_time(data, output_dir):
         if row.get('mean_time') is not None:
             scenarios[row['scenario']].append(row)
 
-    all_planners = sorted(set(row['planner'] for row in data))
-    colors = plt.cm.tab10(np.linspace(0, 1, len(all_planners)))
-    planner_colors = dict(zip(all_planners, colors))
+    planner_colors = get_planner_colors(data)
 
     for scenario, scenario_data in scenarios.items():
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -187,6 +214,94 @@ def plot_planning_time(data, output_dir):
         print(f"Saved: planning_time_{scenario}.png")
 
 
+def plot_path_cost_sum(data, output_dir):
+    """Plot sum of path costs (total path length) vs. number of robots with error bars."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Group by scenario
+    scenarios = defaultdict(list)
+    for row in data:
+        if row.get('mean_path_length') is not None:
+            scenarios[row['scenario']].append(row)
+
+    planner_colors = get_planner_colors(data)
+
+    for scenario, scenario_data in scenarios.items():
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        planners = defaultdict(list)
+        for row in scenario_data:
+            planners[row['planner']].append(row)
+
+        for planner, planner_data in sorted(planners.items()):
+            planner_data.sort(key=lambda x: x['num_robots'])
+
+            robots = [r['num_robots'] for r in planner_data]
+            costs = [r['mean_path_length'] for r in planner_data]
+            stds = [r.get('std_path_length', 0) or 0 for r in planner_data]
+
+            ax.errorbar(robots, costs, yerr=stds, fmt='o-',
+                       label=planner, color=planner_colors[planner],
+                       linewidth=2, markersize=8, capsize=4)
+
+        ax.set_xlabel('Number of Robots', fontsize=12)
+        ax.set_ylabel('Sum of Path Costs', fontsize=12)
+        ax.set_title(f'Sum of Path Costs vs. Robot Count - {scenario}', fontsize=14)
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(output_dir / f'path_cost_sum_{scenario}.png', dpi=150)
+        plt.close()
+
+        print(f"Saved: path_cost_sum_{scenario}.png")
+
+
+def plot_makespan(data, output_dir):
+    """Plot makespan (max path cost for a robot) vs. number of robots with error bars."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Group by scenario
+    scenarios = defaultdict(list)
+    for row in data:
+        if row.get('mean_makespan') is not None:
+            scenarios[row['scenario']].append(row)
+
+    planner_colors = get_planner_colors(data)
+
+    for scenario, scenario_data in scenarios.items():
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        planners = defaultdict(list)
+        for row in scenario_data:
+            planners[row['planner']].append(row)
+
+        for planner, planner_data in sorted(planners.items()):
+            planner_data.sort(key=lambda x: x['num_robots'])
+
+            robots = [r['num_robots'] for r in planner_data]
+            makespans = [r['mean_makespan'] for r in planner_data]
+            stds = [r.get('std_makespan', 0) or 0 for r in planner_data]
+
+            ax.errorbar(robots, makespans, yerr=stds, fmt='o-',
+                       label=planner, color=planner_colors[planner],
+                       linewidth=2, markersize=8, capsize=4)
+
+        ax.set_xlabel('Number of Robots', fontsize=12)
+        ax.set_ylabel('Makespan (Max Path Cost)', fontsize=12)
+        ax.set_title(f'Makespan vs. Robot Count - {scenario}', fontsize=14)
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(output_dir / f'makespan_{scenario}.png', dpi=150)
+        plt.close()
+
+        print(f"Saved: makespan_{scenario}.png")
+
+
 def plot_max_robots_bar(data, output_dir, min_success_rate=0.5):
     """Bar chart showing maximum robots achieved per planner/scenario."""
     output_dir = Path(output_dir)
@@ -213,12 +328,13 @@ def plot_max_robots_bar(data, output_dir, min_success_rate=0.5):
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    colors = plt.cm.tab10(np.linspace(0, 1, len(planners)))
+    planner_colors = get_planner_colors(data)
 
     for i, planner in enumerate(planners):
         values = [max_robots.get((s, planner), 0) for s in scenarios]
         offset = (i - len(planners)/2 + 0.5) * width
-        bars = ax.bar(x + offset, values, width, label=planner, color=colors[i])
+        bars = ax.bar(x + offset, values, width, label=planner,
+                      color=planner_colors.get(planner, '#333333'))
 
         # Add value labels on bars
         for bar, val in zip(bars, values):
@@ -307,6 +423,8 @@ def generate_all_plots(data, output_dir):
     """Generate all plot types."""
     plot_success_rate(data, output_dir, by_scenario=True)
     plot_planning_time(data, output_dir)
+    plot_path_cost_sum(data, output_dir)
+    plot_makespan(data, output_dir)
     plot_max_robots_bar(data, output_dir)
     plot_heatmap(data, output_dir)
 
@@ -322,7 +440,8 @@ def main():
     parser.add_argument('--output', '-o', default='plots',
                        help='Output directory for plots')
     parser.add_argument('--type', '-t',
-                       choices=['all', 'success_rate', 'planning_time', 'max_robots', 'heatmap'],
+                       choices=['all', 'success_rate', 'planning_time', 'path_cost_sum',
+                                'makespan', 'max_robots', 'heatmap'],
                        default='all', help='Type of plot to generate')
 
     args = parser.parse_args()
@@ -342,6 +461,10 @@ def main():
         plot_success_rate(data, output_dir)
     elif args.type == 'planning_time':
         plot_planning_time(data, output_dir)
+    elif args.type == 'path_cost_sum':
+        plot_path_cost_sum(data, output_dir)
+    elif args.type == 'makespan':
+        plot_makespan(data, output_dir)
     elif args.type == 'max_robots':
         plot_max_robots_bar(data, output_dir)
     elif args.type == 'heatmap':
