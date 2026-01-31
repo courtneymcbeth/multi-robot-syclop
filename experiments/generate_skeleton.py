@@ -500,19 +500,22 @@ def visualize_skeleton(env, vertices, edges, output_path=None, show=True):
     for src, tgt, waypoints in edges:
         xs = [wp[0] for wp in waypoints]
         ys = [wp[1] for wp in waypoints]
-        ax.plot(xs, ys, 'b-', linewidth=2, alpha=0.7)
+        ax.plot(xs, ys, color='green', linewidth=2, alpha=0.7)
 
     # Draw skeleton vertices
     if vertices:
         vx = [v[0] for v in vertices]
         vy = [v[1] for v in vertices]
-        ax.scatter(vx, vy, c='red', s=50, zorder=5)
+        ax.scatter(vx, vy, c='green', s=50, zorder=5)
 
     ax.set_xlim(min_x - 1, max_x + 1)
     ax.set_ylim(min_y - 1, max_y + 1)
     ax.set_aspect('equal')
-    ax.set_title('Environment Skeleton (Medial Axis)')
-    ax.grid(True, alpha=0.3)
+    # ax.set_title('Environment Skeleton (Medial Axis)')
+    ax.grid(False)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.tick_params(length=0)
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches='tight')

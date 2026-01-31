@@ -5,14 +5,14 @@ This module creates custom-sized box geometry files based on obstacle dimensions
 from the multi-robot-syclop YAML scenario files.
 """
 
-def generate_box_geometry(width, height, depth=0.2):
+def generate_box_geometry(width, height, depth=0.1):
     """
     Generate a box geometry in BRLCAD .g format.
 
     Args:
         width: Box width (x dimension)
         height: Box height (y dimension)
-        depth: Box depth (z dimension), default 0.2
+        depth: Box depth (z dimension), default 0.1
 
     Returns:
         str: Content of .g file in BRLCAD format
@@ -25,14 +25,14 @@ def generate_box_geometry(width, height, depth=0.2):
     # 8 vertices of the box (in specific order for BRLCAD)
     # Bottom face (z = 0), then top face (z = depth)
     vertices = [
-        ( hw,  hh, 0.0),    # 0: front-right-bottom
-        ( hw,  hh, depth),  # 1: front-right-top
-        ( hw, -hh, 0.0),    # 2: back-right-bottom
-        ( hw, -hh, depth),  # 3: back-right-top
-        (-hw,  hh, 0.0),    # 4: front-left-bottom
-        (-hw,  hh, depth),  # 5: front-left-top
-        (-hw, -hh, 0.0),    # 6: back-left-bottom
-        (-hw, -hh, depth),  # 7: back-left-top
+        ( hw,  hh, depth),    # 0: front-right-bottom
+        ( hw,  hh, 0.0),  # 1: front-right-top
+        ( hw, -hh, depth),    # 2: back-right-bottom
+        ( hw, -hh, 0.0),  # 3: back-right-top
+        (-hw,  hh, depth),    # 4: front-left-bottom
+        (-hw,  hh, 0.0),  # 5: front-left-top
+        (-hw, -hh, depth),    # 6: back-left-bottom
+        (-hw, -hh, 0.0),  # 7: back-left-top
     ]
 
     # Build the .g file content
@@ -75,7 +75,7 @@ def generate_box_geometry(width, height, depth=0.2):
     return "\n".join(lines)
 
 
-def create_geometry_file(width, height, output_path, depth=0.2):
+def create_geometry_file(width, height, output_path, depth=0.1):
     """
     Create a .g geometry file for a box of given dimensions.
 
@@ -83,7 +83,7 @@ def create_geometry_file(width, height, output_path, depth=0.2):
         width: Box width
         height: Box height
         output_path: Path where .g file should be written
-        depth: Box depth (default 0.2)
+        depth: Box depth (default 0.1)
     """
     content = generate_box_geometry(width, height, depth)
 

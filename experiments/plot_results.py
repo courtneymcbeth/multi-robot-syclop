@@ -54,6 +54,8 @@ PLANNER_COLORS = {
     'cipher_geometric': '#e377c2',
     'cipher_kinodynamic': '#e377c2',
     'srrt': '#bcbd22',
+    'WoDaSH': '#2ca02c',
+    'K-WoDaSH': '#17becf',
 }
 
 def get_planner_colors(data):
@@ -483,11 +485,20 @@ def main():
                        choices=['all', 'success_rate', 'planning_time', 'path_cost_sum',
                                 'makespan', 'max_robots', 'heatmap'],
                        default='all', help='Type of plot to generate')
+    parser.add_argument('--extra-csv', nargs='+',
+                       help='Additional aggregated CSV files to merge (e.g., PPL results)')
 
     args = parser.parse_args()
 
     # Load data
     data = load_aggregated_data(args.input)
+
+    # Merge extra CSV files if provided
+    if args.extra_csv:
+        for extra_path in args.extra_csv:
+            extra_data = load_aggregated_data(extra_path)
+            data.extend(extra_data)
+            print(f"Merged {len(extra_data)} rows from {extra_path}")
 
     if not data:
         print("No data to plot")

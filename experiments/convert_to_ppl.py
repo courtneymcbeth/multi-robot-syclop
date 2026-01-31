@@ -284,7 +284,8 @@ def generate_robot_file(output_path):
     print(f"Generated .robot file: {output_path}")
 
 
-def generate_template_xml(data, output_path, num_robots, scenario_name, envs_relative_path):
+def generate_template_xml(data, output_path, num_robots, scenario_name, envs_relative_path,
+                          kinodynamic=False):
     """
     Generate a PPL template.xml file for WoDaSH from syclop data.
 
@@ -294,6 +295,7 @@ def generate_template_xml(data, output_path, num_robots, scenario_name, envs_rel
         num_robots: Number of robots to include
         scenario_name: Name of the scenario
         envs_relative_path: Relative path from output directory to envs directory
+        kinodynamic: If True, generate kinodynamic K-WoDaSH template with car3d dynamics
     """
     robots = data.get('robots', [])
 
@@ -325,7 +327,21 @@ def generate_template_xml(data, output_path, num_robots, scenario_name, envs_rel
         robot_labels.append(robot_label)
 
         lines.append(f"    <Robot label=\"{robot_label}\" filename=\"{robot_path}\">")
-        lines.append("      <Agent type=\"planning\" />")
+        if kinodynamic:
+            lines.append("      <Dynamics type=\"car3d\">")
+            lines.append("        <ControlLimits>")
+            lines.append("            <Range min=\"0\" max=\"1\"/>")
+            lines.append("            <Range min=\"-1\" max=\"1\"/>")
+            lines.append("        </ControlLimits>")
+            lines.append("        <StateLimits>")
+            lines.append("            <Range/>")
+            lines.append("            <Range/>")
+            lines.append("            <Range/>")
+            lines.append("        </StateLimits>")
+            lines.append("      </Dynamics>")
+            lines.append("      <Agent type=\"child\" debug=\"true\" />")
+        else:
+            lines.append("      <Agent type=\"planning\" />")
         lines.append("    </Robot>")
         lines.append("")
 
@@ -337,12 +353,29 @@ def generate_template_xml(data, output_path, num_robots, scenario_name, envs_rel
     lines.append("")
 
     # Coordinator robot (virtual) for WoDaSH
-    member_lines = "\n".join([f"        <Member label=\"{label}\"/>" for label in robot_labels])
     lines.append(f"    <Robot label=\"coordinator\" virtual=\"true\" filename=\"{robot_path}\">")
-    lines.append("      <Agent type=\"coordinator\" dmLabel=\"euclidean\">")
-    for label in robot_labels:
-        lines.append(f"        <Member label=\"{label}\"/>")
-    lines.append("      </Agent>")
+    if kinodynamic:
+        lines.append("      <Dynamics type=\"car3d\">")
+        lines.append("        <ControlLimits>")
+        lines.append("            <Range min=\"0\" max=\"1\"/>")
+        lines.append("            <Range min=\"-1\" max=\"1\"/>")
+        lines.append("        </ControlLimits>")
+        lines.append("        <StateLimits>")
+        lines.append("            <Range/>")
+        lines.append("            <Range/>")
+        lines.append("            <Range/>")
+        lines.append("        </StateLimits>")
+        lines.append("      </Dynamics>")
+        lines.append("      <Agent type=\"coordinator\" dmLabel=\"minkowski\" debug=\"true\">")
+        for label in robot_labels:
+            lines.append(f"        <Member label=\"{label}\"/>")
+        lines.append("        <StepFunction type=\"plangrouppath\" debug=\"true\"/>")
+        lines.append("      </Agent>")
+    else:
+        lines.append("      <Agent type=\"coordinator\" dmLabel=\"euclidean\">")
+        for label in robot_labels:
+            lines.append(f"        <Member label=\"{label}\"/>")
+        lines.append("      </Agent>")
     lines.append("    </Robot>")
     lines.append("")
 
@@ -407,11 +440,17 @@ def generate_template_xml(data, output_path, num_robots, scenario_name, envs_rel
     lines.append("")
 
     # Library section
-    lines.extend(get_library_section())
+    if kinodynamic:
+        lines.extend(get_kinodynamic_library_section())
+    else:
+        lines.extend(get_library_section())
     lines.append("")
 
     # TMPLibrary section for WoDaSH
-    lines.extend(get_tmp_library_section(scenario_name))
+    if kinodynamic:
+        lines.extend(get_kinodynamic_tmp_library_section(scenario_name))
+    else:
+        lines.extend(get_tmp_library_section(scenario_name))
 
     lines.append("</MotionPlanning>")
 
@@ -462,19 +501,19 @@ def get_library_section():
         "",
         "    <Samplers>",
         "      <UniformRandomSampler label=\"UniformRandom\" vcLabel=\"alwaysTrue\"/>",
-        "      <UniformRandomSampler label=\"UniformRandomFree\" vcLabel=\"bounding_spheres\"/>",
+        "      <UniformRandomSampler label=\"UniformRandomFree\" vcLabel=\"pqp_solid\"/>",
         "    </Samplers>",
         "",
         "    <LocalPlanners>",
-        "      <StraightLine label=\"sl\" binaryEvaluation=\"true\" vcLabel=\"bounding_spheres\"/>",
+        "      <StraightLine label=\"sl\" binaryEvaluation=\"true\" vcLabel=\"pqp_solid\"/>",
         "      <StraightLine label=\"slAlwaysTrue\" binaryEvaluation=\"true\" vcLabel=\"alwaysTrue\"/>",
         "    </LocalPlanners>",
         "",
         "    <Extenders>",
         "      <BasicExtender label=\"BERO\" debug=\"false\" dmLabel=\"euclidean\"",
-        "        vcLabel=\"bounding_spheres\" maxDist=\"4.\" minDist=\".01\"/>",
+        "        vcLabel=\"pqp_solid\" maxDist=\"4.\" minDist=\".01\"/>",
         "      <BasicExtender label=\"LongBERO\" debug=\"false\" dmLabel=\"euclidean\"",
-        "        vcLabel=\"bounding_spheres\" maxDist=\"10.\" minDist=\".01\"/>",
+        "        vcLabel=\"pqp_solid\" maxDist=\"10.\" minDist=\".01\"/>",
         "      <DiscreteExtender label=\"DiscreteExtender\" lp=\"sl\"/>",
         "    </Extenders>",
         "",
@@ -540,7 +579,7 @@ def get_library_section():
         "",
         "      <SIPPMethod label=\"SIPP\"/>",
         "",
-        "      <CBSQuery label=\"CBSQuery\" queryLabel=\"SIPP\" debug=\"false\" vcLabel=\"bounding_spheres\" nodeLimit=\"99999999\"/>",
+        "      <CBSQuery label=\"CBSQuery\" queryLabel=\"SIPP\" debug=\"false\" vcLabel=\"pqp_solid\" nodeLimit=\"99999999\"/>",
         "",
         "      <ComposeEvaluator label=\"BoundedCBSQuery\" operator=\"or\">",
         "        <Evaluator label=\"BigTimeEval\"/>",
@@ -571,6 +610,189 @@ def get_library_section():
         "        growGoals=\"false\" regionFactor=\"2.5\" restrictGrowth=\"true\" maxSampleFails=\"500\"",
         "        penetration=\"1\" goalDmLabel=\"euclidean\" goalThreshold=\"0.00000001\">",
         "        <Evaluator label=\"BoundedCompositeQuery\"/>",
+        "      </CDRRRTLite>",
+        "",
+        "      <EvaluateMapStrategy label=\"CompositeEval\">",
+        "        <Evaluator label=\"SIPP\"/>",
+        "      </EvaluateMapStrategy>",
+        "    </MPStrategies>",
+        "",
+        "    <MPTools>",
+        "      <SafeIntervalTool label=\"SI\" vcLabel=\"bounding_spheres\"/>",
+        "    </MPTools>",
+        "",
+        "    <Solver mpStrategyLabel=\"Composite-RRT\" seed=\"@@seed@@\"",
+        "      baseFilename=\"@@planner@@\" vizmoDebug=\"false\"/>",
+        "",
+        "  </Library>",
+    ]
+
+
+def get_kinodynamic_library_section():
+    """
+    Get the Library section for kinodynamic K-WoDaSH template.xml.
+    Based on KinoWarehouse/2/template-ppl.xml.
+
+    Returns:
+        list: Lines of XML for the kinodynamic Library section
+    """
+    return [
+        "  <!-- Set available algorithms and parameters. -->",
+        "  <Library>",
+        "",
+        "    <DistanceMetrics>",
+        "      <Euclidean label=\"euclidean\"/>",
+        "      <StateDistance label=\"stateEuclidean\"/>",
+        "    </DistanceMetrics>",
+        "",
+        "    <ValidityCheckers>",
+        "      <AlwaysTrueValidity label=\"alwaysTrue\"/>",
+        "      <CollisionDetection label=\"rapid\" method=\"RAPID\"/>",
+        "      <CollisionDetection label=\"pqp\" method=\"PQP\"/>",
+        "      <CollisionDetection label=\"pqp_solid\" method=\"PQP_SOLID\" interRobotCollision=\"true\"/>",
+        "      <CollisionDetection label=\"bounding_spheres\" method=\"BoundingSpheres\" interRobotCollision=\"true\"/>",
+        "      <ComposeCollision label=\"bounding_pqp\" operator=\"and\">",
+        "        <CollisionDetector label=\"bounding_spheres\"/>",
+        "        <CollisionDetector label=\"pqp_solid\"/>",
+        "      </ComposeCollision>",
+        "    </ValidityCheckers>",
+        "",
+        "    <NeighborhoodFinders>",
+        "      <BruteForceNF label=\"BFNFAll\" dmLabel=\"euclidean\" unconnected=\"false\" k=\"0\"/>",
+        "      <BruteForceNF label=\"Nearest\" dmLabel=\"stateEuclidean\" unconnected=\"false\" k=\"1\"/>",
+        "      <BruteForceNF label=\"BFNF\" dmLabel=\"euclidean\" unconnected=\"false\" k=\"2\"/>",
+        "      <OptimalNF label=\"OptimalK\" dmLabel=\"euclidean\" unconnected=\"false\" nfType=\"k\"/>",
+        "      <RadiusNF label=\"LargeRadiusNF\" dmLabel=\"euclidean\" radius=\"5\"/>",
+        "      <RadiusNF label=\"SmallRadiusNF\" dmLabel=\"euclidean\" radius=\"1\"/>",
+        "      <OptimalNF label=\"OptimalRadius\" dmLabel=\"euclidean\" nfType=\"radius\"/>",
+        "    </NeighborhoodFinders>",
+        "",
+        "    <Samplers>",
+        "      <UniformRandomSampler label=\"UniformRandom\" vcLabel=\"alwaysTrue\"/>",
+        "      <UniformRandomSampler label=\"UniformRandomFree\" vcLabel=\"pqp_solid\"/>",
+        "      <StateSampler label=\"StateSampler\" vcLabel=\"alwaysTrue\"/>",
+        "      <StateSampler label=\"StateSamplerFree\" vcLabel=\"pqp_solid\"/>",
+        "    </Samplers>",
+        "",
+        "    <LocalPlanners>",
+        "      <StraightLine label=\"sl\" binaryEvaluation=\"true\" vcLabel=\"pqp_solid\"/>",
+        "      <StraightLine label=\"slAlwaysTrue\" binaryEvaluation=\"true\" vcLabel=\"alwaysTrue\"/>",
+        "    </LocalPlanners>",
+        "",
+        "    <Extenders>",
+        "      <BasicExtender label=\"BERO\" debug=\"false\" dmLabel=\"euclidean\"",
+        "        vcLabel=\"pqp_solid\" maxDist=\"4.\" minDist=\".01\"/>",
+        "      <BasicExtender label=\"LongBERO\" debug=\"false\" dmLabel=\"euclidean\"",
+        "        vcLabel=\"pqp_solid\" maxDist=\"10.\" minDist=\".01\"/>",
+        "      <DiscreteExtender label=\"DiscreteExtender\" lp=\"sl\"/>",
+        "      <NewKinodynamicExtender label=\"KinoSmall\" debug=\"false\"",
+        "        dmLabel=\"stateEuclidean\" vcLabel=\"pqp_solid\" integratorLabel=\"rk4\" fixed=\"false\"",
+        "        numSteps=\"7\" minDist=\".01\" best=\"true\" numSampledControls=\"50\" keepLastCollision=\"false\" />",
+        "      <NewKinodynamicExtender label=\"KinoExtender\" debug=\"false\"",
+        "        dmLabel=\"stateEuclidean\" vcLabel=\"pqp_solid\" integratorLabel=\"rk4\" fixed=\"false\"",
+        "        numSteps=\"50\" minDist=\".01\" best=\"true\" numSampledControls=\"50\" keepLastCollision=\"false\" />",
+        "      <NewKinodynamicExtender label=\"KinoExtenderRandom\" debug=\"false\"",
+        "        dmLabel=\"stateEuclidean\" vcLabel=\"pqp_solid\" integratorLabel=\"rk4\" fixed=\"false\"",
+        "        numSteps=\"50\" minDist=\".01\" best=\"false\" numSampledControls=\"50\" keepLastCollision=\"false\"/>",
+        "      <MixExtender label=\"KinoMix\">",
+        "        <Extender label=\"KinoExtender\" probability=\"0.99\"/>",
+        "        <Extender label=\"KinoExtenderRandom\" probability=\"0.01\"/>",
+        "      </MixExtender>",
+        "    </Extenders>",
+        "",
+        "    <Connectors>",
+        "      <NeighborhoodConnector label=\"Closest\" nfLabel=\"BFNF\" lpLabel=\"sl\"",
+        "        checkIfSameCC=\"false\" debug=\"false\"/>",
+        "      <NeighborhoodConnector label=\"ClosestAll\" nfLabel=\"BFNFAll\" lpLabel=\"sl\"",
+        "        checkIfSameCC=\"false\" debug=\"false\"/>",
+        "      <NeighborhoodConnector label=\"ClosestAlwaysTrue\" nfLabel=\"BFNF\" lpLabel=\"slAlwaysTrue\"",
+        "        checkIfSameCC=\"false\" debug=\"false\"/>",
+        "      <NeighborhoodConnector label=\"OptimalClosest\" debug=\"false\"",
+        "        nfLabel=\"OptimalK\" lpLabel=\"sl\" checkIfSameCC=\"false\"/>",
+        "      <NeighborhoodConnector label=\"OptimalConnect\" nfLabel=\"OptimalRadius\" lpLabel=\"sl\"",
+        "        checkIfSameCC=\"false\"/>",
+        "    </Connectors>",
+        "",
+        "    <Metrics>",
+        "      <NumNodesMetric label=\"NumNodes\"/>",
+        "    </Metrics>",
+        "",
+        "    <MapEvaluators>",
+        "      <TimeEvaluator label=\"SmallTimeEval\" timeout=\"60\"/>",
+        "      <TimeEvaluator label=\"TimeEval\" timeout=\"10\"/>",
+        "      <TimeEvaluator label=\"BigTimeEval\" timeout=\"600\"/>",
+        "      <ConditionalEvaluator label=\"NodesEval\" metric_method=\"NumNodes\"",
+        "        value=\"10\" operator=\">=\"/>",
+        "      <ConditionalEvaluator label=\"BigNodesEval\" metric_method=\"NumNodes\"",
+        "        value=\"10000\" operator=\">=\"/>",
+        "      <ConditionalEvaluator label=\"EdgesEval\" metric_method=\"NumEdges\"",
+        "        value=\"1000\" operator=\">\"/>",
+        "",
+        "      <QueryMethod label=\"SharedIndividualQuery\" debug=\"false\" safeIntervalToolLabel=\"SI\"/>",
+        "      <QueryMethod label=\"SPARSQuery\" debug=\"false\" graphSearchAlg=\"dijkstras\" safeIntervalToolLabel=\"SI\"/>",
+        "      <QueryMethod label=\"IndividualQuery\" debug=\"false\" safeIntervalToolLabel=\"SI\"/>",
+        "      <GroupQuery label=\"CompositeQuery\" debug=\"false\"/>",
+        "      <GroupDecoupledQuery label=\"DecoupledQuery\" queryLabel=\"IndividualQuery\"",
+        "        debug=\"false\" ignoreOtherRobots=\"false\"/>",
+        "",
+        "      <ComposeEvaluator label=\"BoundedIndividualQuery\" operator=\"or\">",
+        "        <Evaluator label=\"BigTimeEval\"/>",
+        "        <Evaluator label=\"IndividualQuery\"/>",
+        "      </ComposeEvaluator>",
+        "",
+        "      <ComposeEvaluator label=\"BigBoundedIndividualQuery\" operator=\"and\">",
+        "        <Evaluator label=\"BigTimeEval\"/>",
+        "        <Evaluator label=\"IndividualQuery\"/>",
+        "      </ComposeEvaluator>",
+        "",
+        "      <ComposeEvaluator label=\"SmallBoundedCompositeQuery\" operator=\"or\">",
+        "        <Evaluator label=\"SmallTimeEval\"/>",
+        "        <Evaluator label=\"CompositeQuery\"/>",
+        "      </ComposeEvaluator>",
+        "",
+        "      <ComposeEvaluator label=\"BoundedCompositeQuery\" operator=\"or\">",
+        "        <Evaluator label=\"BigTimeEval\"/>",
+        "        <Evaluator label=\"CompositeQuery\"/>",
+        "      </ComposeEvaluator>",
+        "",
+        "      <ComposeEvaluator label=\"BoundedDecoupledQuery\" operator=\"or\">",
+        "        <Evaluator label=\"TimeEval\"/>",
+        "        <Evaluator label=\"DecoupledQuery\"/>",
+        "      </ComposeEvaluator>",
+        "",
+        "      <SIPPMethod label=\"SIPP\"/>",
+        "",
+        "      <CBSQuery label=\"CBSQuery\" queryLabel=\"SIPP\" debug=\"false\" vcLabel=\"pqp_solid\" nodeLimit=\"99999999\"/>",
+        "",
+        "      <ComposeEvaluator label=\"BoundedCBSQuery\" operator=\"or\">",
+        "        <Evaluator label=\"BigTimeEval\"/>",
+        "        <Evaluator label=\"CBSQuery\"/>",
+        "      </ComposeEvaluator>",
+        "    </MapEvaluators>",
+        "",
+        "    <MPStrategies>",
+        "      <!-- CompositePRM -->",
+        "      <GroupPRM label=\"Composite-PRM\" debug=\"true\">",
+        "        <Sampler label=\"UniformRandomFree\" number=\"10\" attempts=\"1\"/>",
+        "        <Connector label=\"Closest\"/>",
+        "        <Evaluator label=\"BoundedCompositeQuery\"/>",
+        "      </GroupPRM>",
+        "",
+        "      <!-- CompositeRRT -->",
+        "      <GroupRRTStrategy label=\"Composite-RRT\" debug=\"false\"",
+        "        querySampler=\"StateSamplerFree\" samplerLabel=\"StateSampler\"",
+        "        nfLabel=\"Nearest\" extenderLabel=\"KinoSmall\" restrictGrowth=\"true\"",
+        "        growGoals=\"false\" growthFocus=\"0.01\" m=\"1\"",
+        "        goalDmLabel=\"euclidean\" goalThreshold=\"100\">",
+        "        <Evaluator label=\"SmallBoundedCompositeQuery\"/>",
+        "      </GroupRRTStrategy>",
+        "",
+        "      <!-- Composite-DR-RRT -->",
+        "      <CDRRRTLite label=\"Composite-DR-RRT\" debug=\"false\" querySampler=\"StateSamplerFree\"",
+        "        samplerLabel=\"StateSampler\" nfLabel=\"Nearest\" extenderLabel=\"KinoMix\"",
+        "        growGoals=\"false\" regionFactor=\"4.5\" restrictGrowth=\"true\" maxSampleFails=\"8000\"",
+        "        penetration=\"1\" goalDmLabel=\"euclidean\" goalThreshold=\"0.00000001\">",
+        "        <Evaluator label=\"CompositeQuery\"/>",
         "      </CDRRRTLite>",
         "",
         "      <EvaluateMapStrategy label=\"CompositeEval\">",
@@ -621,7 +843,7 @@ def get_tmp_library_section(scenario_name):
         "        groundedHypergraph=\"GroundedHypergraph\"",
         "        motionEvaluator=\"ScheduledCBS\"",
         "        interleave=\"true\"",
-        "        vcLabel=\"bounding_spheres\"",
+        "        vcLabel=\"bounding_pqp\"",
         "      />",
         "    </TMPStrategies>",
         "",
@@ -636,7 +858,81 @@ def get_tmp_library_section(scenario_name):
         "        debug=\"false\"",
         "        writeHypergraph=\"false\"/>",
         "      <ScheduledCBS label=\"ScheduledCBS\"",
-        "        vcLabel=\"bounding_spheres\"",
+        "        vcLabel=\"pqp_solid\"",
+        "        queryStrategy=\"CompositeEval\"",
+        "        queryLabel=\"SIPP\"",
+        "        sqLabel=\"SubmodeQuery\"",
+        "        writeSolution=\"true\"",
+        "        debug=\"false\"",
+        "        bypass=\"true\"",
+        "        workspace=\"true\"/>",
+        "    </TaskEvaluators>",
+        "",
+        "    <TaskDecomposers>",
+        "    </TaskDecomposers>",
+        "",
+        "    <TaskAllocators>",
+        "    </TaskAllocators>",
+        "",
+        "    <StateGraphs>",
+        "      <GroundedHypergraph label=\"GroundedHypergraph\" queryStrategy=\"CompositeQueryStrategy\" debug=\"false\"/>",
+        "    </StateGraphs>",
+        "",
+        "    <Solver tmpStrategyLabel=\"@@planner@@\" baseFilename=\"@@base@@\"/>",
+        "  </TMPLibrary>",
+    ]
+
+
+def get_kinodynamic_tmp_library_section(scenario_name):
+    """
+    Get the TMPLibrary section for kinodynamic K-WoDaSH template.xml.
+    Based on KinoWarehouse/2/template-ppl.xml.
+
+    Args:
+        scenario_name: Name of the scenario for skeleton file path
+
+    Returns:
+        list: Lines of XML for the kinodynamic TMPLibrary section
+    """
+    return [
+        "  <TMPLibrary>",
+        "    <TMPStrategies>",
+        "      <SimpleMotionMethod label=\"Motion\" teLabel=\"simple\"/>",
+        "      <WoDaSH label=\"K-WoDaSH\"",
+        "        debug=\"false\"",
+        "        teLabel=\"SubmodeQuery\"",
+        "        drStrat=\"Composite-DR-RRT\"",
+        "        trajStrat=\"Composite-RRT\"",
+        "        sampler=\"StateSamplerFree\"",
+        "        skeletonType=\"ma\"",
+        "        skeletonIO=\"read\"",
+        f"        skeletonFile=\"@@envdir@@/{scenario_name}/skeletons/ma_skeleton.graph\"",
+        "        decompositionLabel=\"fine\"",
+        "        split=\"0\"",
+        "        intermediateFactor=\"3\"",
+        "        regionFactor=\"4.5\"",
+        "        penetration=\"1\"",
+        "        edgeQuery=\"CompositeQuery\"",
+        "        groundedHypergraph=\"GroundedHypergraph\"",
+        "        motionEvaluator=\"ScheduledCBS\"",
+        "        interleave=\"true\"",
+        "        vcLabel=\"bounding_pqp\"",
+        "        goalBoundary=\"1.0\"",
+        "      />",
+        "    </TMPStrategies>",
+        "",
+        "    <PoIPlacementMethods>",
+        "    </PoIPlacementMethods>",
+        "",
+        "    <TaskEvaluators>",
+        "      <SimpleMotionEvaluator label=\"simple\"/>",
+        "      <SubmodeQuery label=\"SubmodeQuery\"",
+        "        mgLabel=\"ModeGraph\"",
+        "        ghLabel=\"GroundedHypergraph\"",
+        "        debug=\"false\"",
+        "        writeHypergraph=\"false\"/>",
+        "      <ScheduledCBS label=\"ScheduledCBS\"",
+        "        vcLabel=\"pqp_solid\"",
         "        queryStrategy=\"CompositeEval\"",
         "        queryLabel=\"SIPP\"",
         "        sqLabel=\"SubmodeQuery\"",
@@ -753,7 +1049,8 @@ def create_icreate_geometry(objs_dir, ppl_base_dir):
     generate_icreate_obj(str(icreate_path), radius=ROBOT_RADIUS)
 
 
-def convert_scenario(yaml_path, output_dir, robot_counts, scenario_name=None, ppl_base_dir=None):
+def convert_scenario(yaml_path, output_dir, robot_counts, scenario_name=None, ppl_base_dir=None,
+                     kinodynamic=False):
     """
     Convert a single scenario from YAML to PPL format.
 
@@ -763,9 +1060,12 @@ def convert_scenario(yaml_path, output_dir, robot_counts, scenario_name=None, pp
         robot_counts: List of robot counts to generate (e.g., [2, 4, 6, 8])
         scenario_name: Optional scenario name (default: infer from filename)
         ppl_base_dir: Optional PPL base directory for finding icreate.obj
+        kinodynamic: If True, generate kinodynamic template-ppl-k.xml, skipping existing files
     """
     print(f"\n{'='*60}")
     print(f"Converting: {yaml_path}")
+    if kinodynamic:
+        print(f"Mode: kinodynamic (K-WoDaSH)")
     print(f"{'='*60}")
 
     # Load YAML
@@ -792,68 +1092,117 @@ def convert_scenario(yaml_path, output_dir, robot_counts, scenario_name=None, pp
     # Create directory structure
     dirs = create_directory_structure(output_dir, scenario_name)
 
-    # Create geometry files for obstacles
-    print(f"\nCreating geometry files...")
-    create_geometry_files(data, dirs['objs_dir'])
+    if kinodynamic:
+        # In kinodynamic mode, only generate shared resources if they don't exist
+        env_file = dirs['envs_dir'] / f"{scenario_name}.env"
+        if not env_file.exists():
+            print(f"\nCreating geometry files...")
+            create_geometry_files(data, dirs['objs_dir'])
+            if ppl_base_dir is None:
+                ppl_base_dir = output_dir
+            create_icreate_geometry(dirs['objs_dir'], ppl_base_dir)
+            print(f"\nGenerating .env files...")
+            generate_env_file(data, str(env_file), 0, scenario_name, include_robots=False)
+            max_count = max(valid_counts)
+            vizmo_env_file = dirs['envs_dir'] / f"{scenario_name}-vizmo.env"
+            generate_env_file(data, str(vizmo_env_file), max_count, scenario_name, include_robots=True)
+            robot_file = dirs['envs_dir'] / "robot.robot"
+            generate_robot_file(str(robot_file))
+        else:
+            print(f"\nShared resources already exist, skipping generation.")
 
-    # Create symlink to icreate.obj
-    if ppl_base_dir is None:
-        ppl_base_dir = output_dir
-    create_icreate_geometry(dirs['objs_dir'], ppl_base_dir)
+        skeleton_file = dirs['skeletons_dir'] / "ma_skeleton.graph"
+        if not skeleton_file.exists():
+            print(f"Generating skeleton graph...")
+            skeleton_vis = dirs['skeletons_dir'] / "ma_skeleton.png"
+            try:
+                generate_skeleton(
+                    yaml_path=yaml_path,
+                    output_path=str(skeleton_file),
+                    clearance=0.0,
+                    prune_length=1.0,
+                    simplify_tolerance=0.5,
+                    visualize=False,
+                    vis_output=str(skeleton_vis)
+                )
+            except Exception as e:
+                print(f"Warning: Failed to generate skeleton: {e}")
+                print(f"K-WoDaSH may not work without a skeleton file.")
 
-    # Generate both .env files:
-    # - {scenario_name}.env: environment only (no robots)
-    # - {scenario_name}-vizmo.env: environment + robots (for visualization)
-    print(f"\nGenerating .env files...")
+        # Generate template-ppl-k.xml for each robot count
+        print(f"\nGenerating template-ppl-k.xml files for robot counts: {valid_counts}")
+        for count in valid_counts:
+            count_dir = dirs['scenario_dir'] / str(count)
+            count_dir.mkdir(exist_ok=True)
 
-    # Plain .env (no robots)
-    env_file = dirs['envs_dir'] / f"{scenario_name}.env"
-    generate_env_file(data, str(env_file), 0, scenario_name, include_robots=False)
+            template_file = count_dir / "template-ppl-k.xml"
+            generate_template_xml(data, str(template_file), count, scenario_name, "../envs",
+                                  kinodynamic=True)
+    else:
+        # Create geometry files for obstacles
+        print(f"\nCreating geometry files...")
+        create_geometry_files(data, dirs['objs_dir'])
 
-    # Vizmo .env (with robots)
-    max_count = max(valid_counts)
-    vizmo_env_file = dirs['envs_dir'] / f"{scenario_name}-vizmo.env"
-    generate_env_file(data, str(vizmo_env_file), max_count, scenario_name, include_robots=True)
+        # Create symlink to icreate.obj
+        if ppl_base_dir is None:
+            ppl_base_dir = output_dir
+        create_icreate_geometry(dirs['objs_dir'], ppl_base_dir)
 
-    # Generate .robot file
-    print(f"Generating .robot file...")
-    robot_file = dirs['envs_dir'] / "robot.robot"
-    generate_robot_file(str(robot_file))
+        # Generate both .env files:
+        # - {scenario_name}.env: environment only (no robots)
+        # - {scenario_name}-vizmo.env: environment + robots (for visualization)
+        print(f"\nGenerating .env files...")
 
-    # Generate skeleton graph for WoDaSH
-    print(f"Generating skeleton graph...")
-    skeleton_file = dirs['skeletons_dir'] / "ma_skeleton.graph"
-    skeleton_vis = dirs['skeletons_dir'] / "ma_skeleton.png"
-    try:
-        generate_skeleton(
-            yaml_path=yaml_path,
-            output_path=str(skeleton_file),
-            clearance=0.0,
-            prune_length=1.0,
-            simplify_tolerance=0.5,
-            visualize=False,
-            vis_output=str(skeleton_vis)
-        )
-    except Exception as e:
-        print(f"Warning: Failed to generate skeleton: {e}")
-        print(f"WoDaSH may not work without a skeleton file.")
+        # Plain .env (no robots)
+        env_file = dirs['envs_dir'] / f"{scenario_name}.env"
+        generate_env_file(data, str(env_file), 0, scenario_name, include_robots=False)
 
-    # Generate template-ppl.xml for each robot count (WoDaSH uses template-ppl.xml)
-    print(f"\nGenerating template-ppl.xml files for robot counts: {valid_counts}")
-    for count in valid_counts:
-        count_dir = dirs['scenario_dir'] / str(count)
-        count_dir.mkdir(exist_ok=True)
+        # Vizmo .env (with robots)
+        max_count = max(valid_counts)
+        vizmo_env_file = dirs['envs_dir'] / f"{scenario_name}-vizmo.env"
+        generate_env_file(data, str(vizmo_env_file), max_count, scenario_name, include_robots=True)
 
-        template_file = count_dir / "template-ppl.xml"
-        generate_template_xml(data, str(template_file), count, scenario_name, "../envs")
+        # Generate .robot file
+        print(f"Generating .robot file...")
+        robot_file = dirs['envs_dir'] / "robot.robot"
+        generate_robot_file(str(robot_file))
 
+        # Generate skeleton graph for WoDaSH
+        print(f"Generating skeleton graph...")
+        skeleton_file = dirs['skeletons_dir'] / "ma_skeleton.graph"
+        skeleton_vis = dirs['skeletons_dir'] / "ma_skeleton.png"
+        try:
+            generate_skeleton(
+                yaml_path=yaml_path,
+                output_path=str(skeleton_file),
+                clearance=0.0,
+                prune_length=1.0,
+                simplify_tolerance=0.5,
+                visualize=False,
+                vis_output=str(skeleton_vis)
+            )
+        except Exception as e:
+            print(f"Warning: Failed to generate skeleton: {e}")
+            print(f"WoDaSH may not work without a skeleton file.")
+
+        # Generate template-ppl.xml for each robot count (WoDaSH uses template-ppl.xml)
+        print(f"\nGenerating template-ppl.xml files for robot counts: {valid_counts}")
+        for count in valid_counts:
+            count_dir = dirs['scenario_dir'] / str(count)
+            count_dir.mkdir(exist_ok=True)
+
+            template_file = count_dir / "template-ppl.xml"
+            generate_template_xml(data, str(template_file), count, scenario_name, "../envs")
+
+    template_name = "template-ppl-k.xml" if kinodynamic else "template-ppl.xml"
     print(f"\n{'='*60}")
-    print(f"Conversion complete!")
+    print(f"Conversion complete! ({template_name})")
     print(f"Output directory: {dirs['scenario_dir']}")
     print(f"{'='*60}\n")
 
 
-def convert_scenario_dir(scenario_name, experiments_dir, output_dir, ppl_base_dir=None, max_robots=None):
+def convert_scenario_dir(scenario_name, experiments_dir, output_dir, ppl_base_dir=None,
+                         max_robots=None, kinodynamic=False):
     """
     Convert an entire scenario directory to PPL format.
 
@@ -889,12 +1238,15 @@ def convert_scenario_dir(scenario_name, experiments_dir, output_dir, ppl_base_di
         output_dir: Base output directory for PPL experiments
         ppl_base_dir: Optional PPL base directory for finding icreate.obj
         max_robots: Optional maximum robot count to generate
+        kinodynamic: If True, generate kinodynamic template-ppl-k.xml, skipping existing files
     """
     experiments_dir = Path(experiments_dir)
     output_dir = Path(output_dir)
 
     print(f"\n{'='*60}")
     print(f"Converting scenario: {scenario_name}")
+    if kinodynamic:
+        print(f"Mode: kinodynamic (K-WoDaSH)")
     print(f"{'='*60}")
 
     # Find scenario file (environment only)
@@ -952,53 +1304,94 @@ def convert_scenario_dir(scenario_name, experiments_dir, output_dir, ppl_base_di
     # Create directory structure for shared environment
     dirs = create_directory_structure(str(output_dir), scenario_name)
 
-    # Create geometry files for obstacles
-    print(f"\nCreating geometry files...")
-    create_geometry_files(env_data, dirs['objs_dir'])
+    if kinodynamic:
+        # In kinodynamic mode, only generate shared resources if they don't exist
+        env_file = dirs['envs_dir'] / f"{scenario_name}.env"
+        if not env_file.exists():
+            print(f"\nCreating geometry files...")
+            create_geometry_files(env_data, dirs['objs_dir'])
+            if ppl_base_dir is None:
+                ppl_base_dir = str(output_dir)
+            create_icreate_geometry(dirs['objs_dir'], ppl_base_dir)
+            print(f"\nGenerating .env files...")
+            generate_env_file(env_data, str(env_file), 0, scenario_name, include_robots=False)
+            max_count = max(available_counts)
+            max_problem_file = problems_dir / f"robots_{max_count}" / "seed_0.yaml"
+            if max_problem_file.exists():
+                max_problem_data = load_syclop_yaml(str(max_problem_file))
+                vizmo_env_file = dirs['envs_dir'] / f"{scenario_name}-vizmo.env"
+                generate_env_file(max_problem_data, str(vizmo_env_file), max_count, scenario_name, include_robots=True)
+            robot_file = dirs['envs_dir'] / "robot.robot"
+            generate_robot_file(str(robot_file))
+        else:
+            print(f"\nShared resources already exist, skipping generation.")
 
-    # Create symlink to icreate.obj
-    if ppl_base_dir is None:
-        ppl_base_dir = str(output_dir)
-    create_icreate_geometry(dirs['objs_dir'], ppl_base_dir)
+        skeleton_file = dirs['skeletons_dir'] / "ma_skeleton.graph"
+        if not skeleton_file.exists():
+            print(f"Generating skeleton graph...")
+            skeleton_vis = dirs['skeletons_dir'] / "ma_skeleton.png"
+            try:
+                generate_skeleton(
+                    yaml_path=str(scenario_file),
+                    output_path=str(skeleton_file),
+                    clearance=0.0,
+                    prune_length=1.0,
+                    simplify_tolerance=0.5,
+                    visualize=False,
+                    vis_output=str(skeleton_vis)
+                )
+            except Exception as e:
+                print(f"Warning: Failed to generate skeleton: {e}")
+                print(f"K-WoDaSH may not work without a skeleton file.")
+    else:
+        # Create geometry files for obstacles
+        print(f"\nCreating geometry files...")
+        create_geometry_files(env_data, dirs['objs_dir'])
 
-    # Generate .env files (environment only, no robots)
-    print(f"\nGenerating .env files...")
-    env_file = dirs['envs_dir'] / f"{scenario_name}.env"
-    generate_env_file(env_data, str(env_file), 0, scenario_name, include_robots=False)
+        # Create symlink to icreate.obj
+        if ppl_base_dir is None:
+            ppl_base_dir = str(output_dir)
+        create_icreate_geometry(dirs['objs_dir'], ppl_base_dir)
 
-    # For vizmo, we'll use the max robot count from seed_0
-    max_count = max(available_counts)
-    max_problem_file = problems_dir / f"robots_{max_count}" / "seed_0.yaml"
-    if max_problem_file.exists():
-        max_problem_data = load_syclop_yaml(str(max_problem_file))
-        vizmo_env_file = dirs['envs_dir'] / f"{scenario_name}-vizmo.env"
-        generate_env_file(max_problem_data, str(vizmo_env_file), max_count, scenario_name, include_robots=True)
+        # Generate .env files (environment only, no robots)
+        print(f"\nGenerating .env files...")
+        env_file = dirs['envs_dir'] / f"{scenario_name}.env"
+        generate_env_file(env_data, str(env_file), 0, scenario_name, include_robots=False)
 
-    # Generate .robot file
-    print(f"Generating .robot file...")
-    robot_file = dirs['envs_dir'] / "robot.robot"
-    generate_robot_file(str(robot_file))
+        # For vizmo, we'll use the max robot count from seed_0
+        max_count = max(available_counts)
+        max_problem_file = problems_dir / f"robots_{max_count}" / "seed_0.yaml"
+        if max_problem_file.exists():
+            max_problem_data = load_syclop_yaml(str(max_problem_file))
+            vizmo_env_file = dirs['envs_dir'] / f"{scenario_name}-vizmo.env"
+            generate_env_file(max_problem_data, str(vizmo_env_file), max_count, scenario_name, include_robots=True)
 
-    # Generate skeleton graph
-    print(f"Generating skeleton graph...")
-    skeleton_file = dirs['skeletons_dir'] / "ma_skeleton.graph"
-    skeleton_vis = dirs['skeletons_dir'] / "ma_skeleton.png"
-    try:
-        generate_skeleton(
-            yaml_path=str(scenario_file),
-            output_path=str(skeleton_file),
-            clearance=0.0,
-            prune_length=1.0,
-            simplify_tolerance=0.5,
-            visualize=False,
-            vis_output=str(skeleton_vis)
-        )
-    except Exception as e:
-        print(f"Warning: Failed to generate skeleton: {e}")
-        print(f"WoDaSH may not work without a skeleton file.")
+        # Generate .robot file
+        print(f"Generating .robot file...")
+        robot_file = dirs['envs_dir'] / "robot.robot"
+        generate_robot_file(str(robot_file))
 
-    # Generate template-ppl.xml for each seed and robot count
-    print(f"\nGenerating template-ppl.xml files for {len(available_seeds)} seeds x {len(available_counts)} robot counts...")
+        # Generate skeleton graph
+        print(f"Generating skeleton graph...")
+        skeleton_file = dirs['skeletons_dir'] / "ma_skeleton.graph"
+        skeleton_vis = dirs['skeletons_dir'] / "ma_skeleton.png"
+        try:
+            generate_skeleton(
+                yaml_path=str(scenario_file),
+                output_path=str(skeleton_file),
+                clearance=0.0,
+                prune_length=1.0,
+                simplify_tolerance=0.5,
+                visualize=False,
+                vis_output=str(skeleton_vis)
+            )
+        except Exception as e:
+            print(f"Warning: Failed to generate skeleton: {e}")
+            print(f"WoDaSH may not work without a skeleton file.")
+
+    # Generate templates for each seed and robot count
+    template_name = "template-ppl-k.xml" if kinodynamic else "template-ppl.xml"
+    print(f"\nGenerating {template_name} files for {len(available_seeds)} seeds x {len(available_counts)} robot counts...")
 
     for seed in available_seeds:
         # Create seed-specific scenario directory
@@ -1019,14 +1412,15 @@ def convert_scenario_dir(scenario_name, experiments_dir, output_dir, ppl_base_di
             count_dir = seed_scenario_dir / str(count)
             count_dir.mkdir(exist_ok=True)
 
-            template_file = count_dir / "template-ppl.xml"
+            template_file = count_dir / template_name
             # Templates reference the shared environment: envs/<scenario_name>/
-            generate_template_xml(problem_data, str(template_file), count, scenario_name, "../envs")
+            generate_template_xml(problem_data, str(template_file), count, scenario_name, "../envs",
+                                  kinodynamic=kinodynamic)
 
-        print(f"  Generated templates for seed {seed}")
+        print(f"  Generated {template_name} for seed {seed}")
 
     print(f"\n{'='*60}")
-    print(f"Conversion complete!")
+    print(f"Conversion complete! ({template_name})")
     print(f"Environment files: {dirs['envs_dir']}")
     print(f"Template directories: {scenario_name}_seed0/, {scenario_name}_seed1/, ...")
     print(f"{'='*60}\n")
@@ -1091,6 +1485,9 @@ Examples:
                         help='Maximum robot count to generate')
     parser.add_argument('--ppl-base-dir', '-p', default=None,
                         help='PPL base directory for finding shared files like icreate.obj')
+    parser.add_argument('--kinodynamic', '-k', action='store_true',
+                        help='Generate kinodynamic K-WoDaSH template (template-ppl-k.xml) with car3d dynamics. '
+                             'Existing files are not overwritten.')
 
     args = parser.parse_args()
 
@@ -1125,7 +1522,8 @@ Examples:
                     experiments_dir=str(experiments_dir),
                     output_dir=str(output_dir),
                     ppl_base_dir=args.ppl_base_dir or str(output_dir),
-                    max_robots=args.max_robots
+                    max_robots=args.max_robots,
+                    kinodynamic=args.kinodynamic
                 )
             except Exception as e:
                 print(f"Error converting scenario {scenario_name}: {e}")
@@ -1152,7 +1550,8 @@ Examples:
                 str(output_dir),
                 robot_counts,
                 args.scenario_name,
-                args.ppl_base_dir or str(output_dir)
+                args.ppl_base_dir or str(output_dir),
+                kinodynamic=args.kinodynamic
             )
         except Exception as e:
             print(f"Error converting {yaml_path}: {e}")
