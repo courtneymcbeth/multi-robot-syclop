@@ -3,6 +3,7 @@
 
 #include "guided_planner.h"
 #include "syclop_rrt_solver.h"
+#include "rrt_connect_solver.h"
 #include "db_rrt_solver.h"
 #include <stdexcept>
 
@@ -15,6 +16,9 @@ std::unique_ptr<GuidedPlanner> createGuidedPlanner(
 {
     if (method == "syclop_rrt") {
         return std::make_unique<SyclopRRTSolver>(config, collision_manager);
+    }
+    else if (method == "rrt_connect") {
+        return std::make_unique<RRTConnectSolver>(config, collision_manager);
     }
     else if (method == "db_rrt") {
         // Use default DB-RRT config

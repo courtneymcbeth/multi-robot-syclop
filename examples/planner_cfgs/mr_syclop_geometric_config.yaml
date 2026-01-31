@@ -12,6 +12,8 @@ segment_timesteps: 30      # Number of timesteps per segment
 
 use_kinodynamics: false
 
+guided_planner_method: "rrt_connect"
+
 # MAPF Configuration
 mapf:
   method: "cbs"           # Options: "decoupled", "astar", "cbs"
@@ -27,7 +29,7 @@ guided_planner:
   num_tree_expansions: 1
   prob_abandon_lead_early: 0.25
   prob_shortest_path: 0.95
-  use_regional_nn: true
+  use_regional_nn: false
 #   debug: false
 
 #   # Composite DB-RRT configuration (used for collision resolution)

@@ -35,7 +35,7 @@ planners:
 
   cipher_geometric:
     executable: ../build/mr_syclop_geometric
-    config: ../examples/planner_cfgs/mr_syclop_geometricconfig.yaml
+    config: ../examples/planner_cfgs/mr_syclop_geometric_config.yaml
 
   cipher_kinodynamic:
     executable: ../build/mr_syclop

@@ -79,6 +79,7 @@ target_include_directories(mapf_solver_lib PUBLIC
 add_library(guided_planner
   src/guided/guided_planner.cpp
   src/guided/syclop_rrt_solver.cpp
+  src/guided/rrt_connect_solver.cpp
   src/guided/db_rrt_solver.cpp
 )
 target_link_libraries(guided_planner
@@ -131,6 +132,7 @@ target_compile_options(mr_syclop PRIVATE -g -O0)
 add_library(guided_planner_geometric
   src/guided/guided_planner_geometric.cpp
   src/guided/syclop_rrt_solver.cpp
+  src/guided/rrt_connect_solver.cpp
 )
 target_link_libraries(guided_planner_geometric
   PUBLIC ompl

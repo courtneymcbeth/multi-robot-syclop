@@ -616,7 +616,8 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
     draw_decomposition(ax, solution, env, planner_config,
                        show_grid=show_grid, show_high_level=show_high_level)
 
-    colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
+    num_robots = max(len(paths), len(env['robots']))
+    colors = plt.cm.tab10(np.linspace(0, 1, num_robots))
 
     # Plot start and goal positions
     for robot_idx, robot_config in enumerate(env['robots']):
@@ -633,8 +634,12 @@ def interactive_animation(env_file, solution_file, initial_speed=1.0, config_fil
     trail_artists = []
     for robot_idx in range(len(paths)):
         color = colors[robot_idx]
-        robot_name = env['robots'][robot_idx].get('name', f'Robot {robot_idx}')
-        robot_radius = get_robot_radius(env['robots'][robot_idx])
+        if robot_idx < len(env['robots']):
+            robot_name = env['robots'][robot_idx].get('name', f'Robot {robot_idx}')
+            robot_radius = get_robot_radius(env['robots'][robot_idx])
+        else:
+            robot_name = f'Robot {robot_idx}'
+            robot_radius = get_robot_radius(env['robots'][0]) if env['robots'] else 0.5
 
         # Robot circle with actual size
         robot_circle = plt.Circle((0, 0), robot_radius, color=color, zorder=5,
@@ -904,7 +909,8 @@ def draw_decomposition(ax, solution, env, planner_config, show_grid=True, show_h
 
     # Draw high-level paths (leads)
     if show_high_level and 'leads' in decomp and decomp['leads']:
-        colors = plt.cm.tab10(np.linspace(0, 1, len(env['robots'])))
+        num_leads = len(decomp['leads'])
+        colors = plt.cm.tab10(np.linspace(0, 1, max(num_leads, len(env['robots']))))
         for robot_idx, lead in enumerate(decomp['leads']):
             if lead:
                 color = colors[robot_idx]
