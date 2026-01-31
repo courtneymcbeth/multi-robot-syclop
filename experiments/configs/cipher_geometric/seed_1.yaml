@@ -1,0 +1,14 @@
+seed: 1
+decomposition_region_length: 5
+segment_timesteps: 30
+use_kinodynamics: false
+guided_planner_method: rrt_connect
+mapf: {method: cbs, region_capacity: 2, max_obstacle_volume_percent: 0.5}
+guided_planner: {num_free_volume_samples: 100, time_per_robot: 1.0, goal_threshold: 0.5,
+  num_region_expansions: 100, num_tree_expansions: 1, prob_abandon_lead_early: 0.25,
+  prob_shortest_path: 0.95, use_regional_nn: false}
+collision_resolution: {max_decomposition_attempts: 3, max_subproblem_expansion_attempts: 3,
+  max_composite_attempts: 1, decomposition_subdivision_factor: 2.0, recheck_from_prior_segment: true,
+  escalation_frequency: 3}
+max_iterations: 10
+segment_duration: 0.5

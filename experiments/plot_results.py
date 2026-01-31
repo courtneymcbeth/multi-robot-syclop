@@ -25,16 +25,34 @@ import numpy as np
 from aggregate_results import aggregate_results
 from parse_results import parse_results_directory
 
+# Geometric planners; everything else is kinodynamic
+GEOMETRIC_PLANNERS = {'arc', 'srrt', 'drrt', 'coupled_rrt_geometric',
+                      'decoupled_rrt_geometric', 'cipher_geometric'}
+
+
+def split_by_type(data):
+    """Split data into geometric and kinodynamic subsets."""
+    geometric = [row for row in data if row['planner'] in GEOMETRIC_PLANNERS]
+    kinodynamic = [row for row in data if row['planner'] not in GEOMETRIC_PLANNERS]
+    groups = []
+    if geometric:
+        groups.append(('geometric', geometric))
+    if kinodynamic:
+        groups.append(('kinodynamic', kinodynamic))
+    return groups
+
+
 # Fixed color mapping so each planner always gets the same color across all plots
 PLANNER_COLORS = {
     'arc': '#1f77b4',
+    'k_arc': '#1f77b4',
     'coupled_rrt_geometric': '#ff7f0e',
-    'coupled_rrt_kinodynamic': '#2ca02c',
+    'coupled_rrt_kinodynamic': '#ff7f0e',
     'decoupled_rrt_geometric': '#d62728',
-    'decoupled_rrt_kinodynamic': '#9467bd',
+    'decoupled_rrt_kinodynamic': '#d62728',
     'drrt': '#8c564b',
     'cipher_geometric': '#e377c2',
-    'cipher_kinodynamic': '#7f7f7f',
+    'cipher_kinodynamic': '#e377c2',
     'srrt': '#bcbd22',
 }
 
@@ -109,35 +127,37 @@ def plot_success_rate(data, output_dir, by_scenario=True):
 
     if by_scenario:
         for scenario, scenario_data in scenarios.items():
-            fig, ax = plt.subplots(figsize=(10, 6))
+            for ptype, type_data in split_by_type(scenario_data):
+                fig, ax = plt.subplots(figsize=(10, 6))
 
-            # Group by planner
-            planners = defaultdict(list)
-            for row in scenario_data:
-                planners[row['planner']].append(row)
+                # Group by planner
+                planners = defaultdict(list)
+                for row in type_data:
+                    planners[row['planner']].append(row)
 
-            for planner, planner_data in sorted(planners.items()):
-                # Sort by robot count
-                planner_data.sort(key=lambda x: x['num_robots'])
+                for planner, planner_data in sorted(planners.items()):
+                    # Sort by robot count
+                    planner_data.sort(key=lambda x: x['num_robots'])
 
-                robots = [r['num_robots'] for r in planner_data]
-                success = [r['success_rate'] * 100 for r in planner_data]
+                    robots = [r['num_robots'] for r in planner_data]
+                    success = [r['success_rate'] * 100 for r in planner_data]
 
-                ax.plot(robots, success, 'o-', label=planner,
-                       color=planner_colors[planner], linewidth=2, markersize=8)
+                    ax.plot(robots, success, 'o-', label=planner,
+                           color=planner_colors[planner], linewidth=2, markersize=8)
 
-            ax.set_xlabel('Number of Robots', fontsize=12)
-            ax.set_ylabel('Success Rate (%)', fontsize=12)
-            ax.set_title(f'Success Rate vs. Robot Count - {scenario}', fontsize=14)
-            ax.legend(loc='best')
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(-5, 105)
+                ax.set_xlabel('Number of Robots', fontsize=12)
+                ax.set_ylabel('Success Rate (%)', fontsize=12)
+                ax.set_title(f'Success Rate vs. Robot Count - {scenario} ({ptype})', fontsize=14)
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.3)
+                ax.set_ylim(-5, 105)
 
-            plt.tight_layout()
-            plt.savefig(output_dir / f'success_rate_{scenario}.png', dpi=150)
-            plt.close()
+                plt.tight_layout()
+                fname = f'success_rate_{scenario}_{ptype}.png'
+                plt.savefig(output_dir / fname, dpi=150)
+                plt.close()
 
-            print(f"Saved: success_rate_{scenario}.png")
+                print(f"Saved: {fname}")
     else:
         # Combined plot
         fig, ax = plt.subplots(figsize=(12, 8))
@@ -184,34 +204,37 @@ def plot_planning_time(data, output_dir):
     planner_colors = get_planner_colors(data)
 
     for scenario, scenario_data in scenarios.items():
-        fig, ax = plt.subplots(figsize=(10, 6))
+        for ptype, type_data in split_by_type(scenario_data):
+            fig, ax = plt.subplots(figsize=(10, 6))
 
-        planners = defaultdict(list)
-        for row in scenario_data:
-            planners[row['planner']].append(row)
+            planners = defaultdict(list)
+            for row in type_data:
+                planners[row['planner']].append(row)
 
-        for planner, planner_data in sorted(planners.items()):
-            planner_data.sort(key=lambda x: x['num_robots'])
+            for planner, planner_data in sorted(planners.items()):
+                planner_data.sort(key=lambda x: x['num_robots'])
 
-            robots = [r['num_robots'] for r in planner_data]
-            times = [r['mean_time'] for r in planner_data]
-            stds = [r.get('std_time', 0) or 0 for r in planner_data]
+                robots = [r['num_robots'] for r in planner_data]
+                times = [r['mean_time'] for r in planner_data]
+                stds = [r.get('std_time', 0) or 0 for r in planner_data]
 
-            ax.errorbar(robots, times, yerr=stds, fmt='o-',
-                       label=planner, color=planner_colors[planner],
-                       linewidth=2, markersize=8, capsize=4)
+                ax.errorbar(robots, times, yerr=stds, fmt='o-',
+                           label=planner, color=planner_colors[planner],
+                           linewidth=2, markersize=8, capsize=4)
 
-        ax.set_xlabel('Number of Robots', fontsize=12)
-        ax.set_ylabel('Planning Time (s)', fontsize=12)
-        ax.set_title(f'Planning Time vs. Robot Count - {scenario}', fontsize=14)
-        ax.legend(loc='best')
-        ax.grid(True, alpha=0.3)
+            ax.set_xlabel('Number of Robots', fontsize=12)
+            ax.set_ylabel('Planning Time (s)', fontsize=12)
+            ax.set_yscale('log')
+            ax.set_title(f'Planning Time vs. Robot Count - {scenario} ({ptype})', fontsize=14)
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
 
-        plt.tight_layout()
-        plt.savefig(output_dir / f'planning_time_{scenario}.png', dpi=150)
-        plt.close()
+            plt.tight_layout()
+            fname = f'planning_time_{scenario}_{ptype}.png'
+            plt.savefig(output_dir / fname, dpi=150)
+            plt.close()
 
-        print(f"Saved: planning_time_{scenario}.png")
+            print(f"Saved: {fname}")
 
 
 def plot_path_cost_sum(data, output_dir):
@@ -228,34 +251,36 @@ def plot_path_cost_sum(data, output_dir):
     planner_colors = get_planner_colors(data)
 
     for scenario, scenario_data in scenarios.items():
-        fig, ax = plt.subplots(figsize=(10, 6))
+        for ptype, type_data in split_by_type(scenario_data):
+            fig, ax = plt.subplots(figsize=(10, 6))
 
-        planners = defaultdict(list)
-        for row in scenario_data:
-            planners[row['planner']].append(row)
+            planners = defaultdict(list)
+            for row in type_data:
+                planners[row['planner']].append(row)
 
-        for planner, planner_data in sorted(planners.items()):
-            planner_data.sort(key=lambda x: x['num_robots'])
+            for planner, planner_data in sorted(planners.items()):
+                planner_data.sort(key=lambda x: x['num_robots'])
 
-            robots = [r['num_robots'] for r in planner_data]
-            costs = [r['mean_path_length'] for r in planner_data]
-            stds = [r.get('std_path_length', 0) or 0 for r in planner_data]
+                robots = [r['num_robots'] for r in planner_data]
+                costs = [r['mean_path_length'] for r in planner_data]
+                stds = [r.get('std_path_length', 0) or 0 for r in planner_data]
 
-            ax.errorbar(robots, costs, yerr=stds, fmt='o-',
-                       label=planner, color=planner_colors[planner],
-                       linewidth=2, markersize=8, capsize=4)
+                ax.errorbar(robots, costs, yerr=stds, fmt='o-',
+                           label=planner, color=planner_colors[planner],
+                           linewidth=2, markersize=8, capsize=4)
 
-        ax.set_xlabel('Number of Robots', fontsize=12)
-        ax.set_ylabel('Sum of Path Costs', fontsize=12)
-        ax.set_title(f'Sum of Path Costs vs. Robot Count - {scenario}', fontsize=14)
-        ax.legend(loc='best')
-        ax.grid(True, alpha=0.3)
+            ax.set_xlabel('Number of Robots', fontsize=12)
+            ax.set_ylabel('Sum of Path Costs', fontsize=12)
+            ax.set_title(f'Sum of Path Costs vs. Robot Count - {scenario} ({ptype})', fontsize=14)
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
 
-        plt.tight_layout()
-        plt.savefig(output_dir / f'path_cost_sum_{scenario}.png', dpi=150)
-        plt.close()
+            plt.tight_layout()
+            fname = f'path_cost_sum_{scenario}_{ptype}.png'
+            plt.savefig(output_dir / fname, dpi=150)
+            plt.close()
 
-        print(f"Saved: path_cost_sum_{scenario}.png")
+            print(f"Saved: {fname}")
 
 
 def plot_makespan(data, output_dir):
@@ -272,34 +297,36 @@ def plot_makespan(data, output_dir):
     planner_colors = get_planner_colors(data)
 
     for scenario, scenario_data in scenarios.items():
-        fig, ax = plt.subplots(figsize=(10, 6))
+        for ptype, type_data in split_by_type(scenario_data):
+            fig, ax = plt.subplots(figsize=(10, 6))
 
-        planners = defaultdict(list)
-        for row in scenario_data:
-            planners[row['planner']].append(row)
+            planners = defaultdict(list)
+            for row in type_data:
+                planners[row['planner']].append(row)
 
-        for planner, planner_data in sorted(planners.items()):
-            planner_data.sort(key=lambda x: x['num_robots'])
+            for planner, planner_data in sorted(planners.items()):
+                planner_data.sort(key=lambda x: x['num_robots'])
 
-            robots = [r['num_robots'] for r in planner_data]
-            makespans = [r['mean_makespan'] for r in planner_data]
-            stds = [r.get('std_makespan', 0) or 0 for r in planner_data]
+                robots = [r['num_robots'] for r in planner_data]
+                makespans = [r['mean_makespan'] for r in planner_data]
+                stds = [r.get('std_makespan', 0) or 0 for r in planner_data]
 
-            ax.errorbar(robots, makespans, yerr=stds, fmt='o-',
-                       label=planner, color=planner_colors[planner],
-                       linewidth=2, markersize=8, capsize=4)
+                ax.errorbar(robots, makespans, yerr=stds, fmt='o-',
+                           label=planner, color=planner_colors[planner],
+                           linewidth=2, markersize=8, capsize=4)
 
-        ax.set_xlabel('Number of Robots', fontsize=12)
-        ax.set_ylabel('Makespan (Max Path Cost)', fontsize=12)
-        ax.set_title(f'Makespan vs. Robot Count - {scenario}', fontsize=14)
-        ax.legend(loc='best')
-        ax.grid(True, alpha=0.3)
+            ax.set_xlabel('Number of Robots', fontsize=12)
+            ax.set_ylabel('Makespan (Max Path Cost)', fontsize=12)
+            ax.set_title(f'Makespan vs. Robot Count - {scenario} ({ptype})', fontsize=14)
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
 
-        plt.tight_layout()
-        plt.savefig(output_dir / f'makespan_{scenario}.png', dpi=150)
-        plt.close()
+            plt.tight_layout()
+            fname = f'makespan_{scenario}_{ptype}.png'
+            plt.savefig(output_dir / fname, dpi=150)
+            plt.close()
 
-        print(f"Saved: makespan_{scenario}.png")
+            print(f"Saved: {fname}")
 
 
 def plot_max_robots_bar(data, output_dir, min_success_rate=0.5):
@@ -319,45 +346,51 @@ def plot_max_robots_bar(data, output_dir, min_success_rate=0.5):
         print("No data for max robots bar chart")
         return
 
-    # Organize data
-    scenarios = sorted(set(k[0] for k in max_robots.keys()))
-    planners = sorted(set(k[1] for k in max_robots.keys()))
-
-    x = np.arange(len(scenarios))
-    width = 0.8 / len(planners)
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-
     planner_colors = get_planner_colors(data)
 
-    for i, planner in enumerate(planners):
-        values = [max_robots.get((s, planner), 0) for s in scenarios]
-        offset = (i - len(planners)/2 + 0.5) * width
-        bars = ax.bar(x + offset, values, width, label=planner,
-                      color=planner_colors.get(planner, '#333333'))
+    for ptype, _ in split_by_type(data):
+        type_max = {k: v for k, v in max_robots.items() if
+                    (k[1] in GEOMETRIC_PLANNERS) == (ptype == 'geometric')}
+        if not type_max:
+            continue
 
-        # Add value labels on bars
-        for bar, val in zip(bars, values):
-            if val > 0:
-                ax.annotate(f'{val}',
-                           xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-                           xytext=(0, 3),
-                           textcoords="offset points",
-                           ha='center', va='bottom', fontsize=9)
+        scenarios = sorted(set(k[0] for k in type_max.keys()))
+        planners = sorted(set(k[1] for k in type_max.keys()))
 
-    ax.set_xlabel('Scenario', fontsize=12)
-    ax.set_ylabel('Max Robots (≥50% success)', fontsize=12)
-    ax.set_title('Maximum Robot Count by Planner and Scenario', fontsize=14)
-    ax.set_xticks(x)
-    ax.set_xticklabels(scenarios, rotation=45, ha='right')
-    ax.legend(loc='best')
-    ax.grid(True, alpha=0.3, axis='y')
+        x = np.arange(len(scenarios))
+        width = 0.8 / len(planners)
 
-    plt.tight_layout()
-    plt.savefig(output_dir / 'max_robots_bar.png', dpi=150)
-    plt.close()
+        fig, ax = plt.subplots(figsize=(12, 6))
 
-    print("Saved: max_robots_bar.png")
+        for i, planner in enumerate(planners):
+            values = [type_max.get((s, planner), 0) for s in scenarios]
+            offset = (i - len(planners)/2 + 0.5) * width
+            bars = ax.bar(x + offset, values, width, label=planner,
+                          color=planner_colors.get(planner, '#333333'))
+
+            # Add value labels on bars
+            for bar, val in zip(bars, values):
+                if val > 0:
+                    ax.annotate(f'{val}',
+                               xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                               xytext=(0, 3),
+                               textcoords="offset points",
+                               ha='center', va='bottom', fontsize=9)
+
+        ax.set_xlabel('Scenario', fontsize=12)
+        ax.set_ylabel('Max Robots (≥50% success)', fontsize=12)
+        ax.set_title(f'Maximum Robot Count by Planner and Scenario ({ptype})', fontsize=14)
+        ax.set_xticks(x)
+        ax.set_xticklabels(scenarios, rotation=45, ha='right')
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+        fname = f'max_robots_bar_{ptype}.png'
+        plt.savefig(output_dir / fname, dpi=150)
+        plt.close()
+
+        print(f"Saved: {fname}")
 
 
 def plot_heatmap(data, output_dir, min_success_rate=0.5):
@@ -377,46 +410,53 @@ def plot_heatmap(data, output_dir, min_success_rate=0.5):
         print("No data for heatmap")
         return
 
-    scenarios = sorted(set(k[0] for k in max_robots.keys()))
-    planners = sorted(set(k[1] for k in max_robots.keys()))
+    for ptype, _ in split_by_type(data):
+        type_max = {k: v for k, v in max_robots.items() if
+                    (k[1] in GEOMETRIC_PLANNERS) == (ptype == 'geometric')}
+        if not type_max:
+            continue
 
-    # Create matrix
-    matrix = np.zeros((len(planners), len(scenarios)))
-    for i, planner in enumerate(planners):
-        for j, scenario in enumerate(scenarios):
-            matrix[i, j] = max_robots.get((scenario, planner), 0)
+        scenarios = sorted(set(k[0] for k in type_max.keys()))
+        planners = sorted(set(k[1] for k in type_max.keys()))
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+        # Create matrix
+        matrix = np.zeros((len(planners), len(scenarios)))
+        for i, planner in enumerate(planners):
+            for j, scenario in enumerate(scenarios):
+                matrix[i, j] = type_max.get((scenario, planner), 0)
 
-    im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto')
+        fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Add colorbar
-    cbar = ax.figure.colorbar(im, ax=ax)
-    cbar.ax.set_ylabel('Max Robots', rotation=-90, va="bottom")
+        im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto')
 
-    # Set ticks
-    ax.set_xticks(np.arange(len(scenarios)))
-    ax.set_yticks(np.arange(len(planners)))
-    ax.set_xticklabels(scenarios, rotation=45, ha='right')
-    ax.set_yticklabels(planners)
+        # Add colorbar
+        cbar = ax.figure.colorbar(im, ax=ax)
+        cbar.ax.set_ylabel('Max Robots', rotation=-90, va="bottom")
 
-    # Add text annotations
-    for i in range(len(planners)):
-        for j in range(len(scenarios)):
-            val = int(matrix[i, j])
-            if val > 0:
-                text = ax.text(j, i, val, ha="center", va="center",
-                              color="white" if val > matrix.max()/2 else "black")
+        # Set ticks
+        ax.set_xticks(np.arange(len(scenarios)))
+        ax.set_yticks(np.arange(len(planners)))
+        ax.set_xticklabels(scenarios, rotation=45, ha='right')
+        ax.set_yticklabels(planners)
 
-    ax.set_title('Max Robots per Planner/Scenario (≥50% success rate)', fontsize=14)
-    ax.set_xlabel('Scenario')
-    ax.set_ylabel('Planner')
+        # Add text annotations
+        for i in range(len(planners)):
+            for j in range(len(scenarios)):
+                val = int(matrix[i, j])
+                if val > 0:
+                    ax.text(j, i, val, ha="center", va="center",
+                            color="white" if val > matrix.max()/2 else "black")
 
-    plt.tight_layout()
-    plt.savefig(output_dir / 'heatmap_max_robots.png', dpi=150)
-    plt.close()
+        ax.set_title(f'Max Robots per Planner/Scenario ({ptype}, ≥50% success rate)', fontsize=14)
+        ax.set_xlabel('Scenario')
+        ax.set_ylabel('Planner')
 
-    print("Saved: heatmap_max_robots.png")
+        plt.tight_layout()
+        fname = f'heatmap_max_robots_{ptype}.png'
+        plt.savefig(output_dir / fname, dpi=150)
+        plt.close()
+
+        print(f"Saved: {fname}")
 
 
 def generate_all_plots(data, output_dir):

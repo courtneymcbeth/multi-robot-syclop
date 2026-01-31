@@ -1,17 +1,22 @@
 seed: 5
 decomposition_region_length: 5
 segment_timesteps: 30
-use_kinodynamics: false
+use_kinodynamics: true
+guided_planner_method: db_rrt
 mapf: {method: cbs, region_capacity: 2, max_obstacle_volume_percent: 0.5}
 guided_planner:
   num_free_volume_samples: 100
-  time_per_robot: 2.0
+  time_per_robot: 10.0
   goal_threshold: 0.5
   num_region_expansions: 100
   num_tree_expansions: 1
   prob_abandon_lead_early: 0.25
   prob_shortest_path: 0.95
   use_regional_nn: true
+  db_rrt: {motions_file: db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack,
+    models_base_path: db-CBS/dynoplan/dynobench/models/, timelimit: 10.0, max_expands: 10000,
+    goal_region: 0.3, delta: 0.3, goal_bias: 0.1, max_motions: 1000, seed: 15, do_optimization: true,
+    solver_id: 0, use_nigh_nn: true, debug: false, use_region_guidance: true, region_bias: 0.3}
   composite_dbrrt:
     time_limit: 120.0
     delta: 0.3
@@ -21,10 +26,10 @@ guided_planner:
     goal_threshold: 0.5
     goal_bias: 0.1
     require_all_move: false
-    models_base_path: ../db-CBS/dynoplan/dynobench/models
+    models_base_path: db-CBS/dynoplan/dynobench/models
     seed: -1
     debug: false
-    motion_files: {unicycle_first_order_0_sphere: ../db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack}
+    motion_files: {unicycle_first_order_0_sphere: db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack}
 collision_resolution: {max_decomposition_attempts: 3, max_subproblem_expansion_attempts: 3,
   max_composite_attempts: 1, decomposition_subdivision_factor: 2.0, recheck_from_prior_segment: true,
   escalation_frequency: 3}

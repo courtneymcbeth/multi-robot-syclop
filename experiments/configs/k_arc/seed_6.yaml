@@ -1,0 +1,30 @@
+num_segments: 4
+initial_planning_time: 10.0
+goal_threshold: 0.5
+segment_planning_time: 5.0
+waypoint_tolerance: 0.5
+final_goal_tolerance: 0.3
+max_solver_escalations: 3
+prioritized_timeout: 5.0
+composite_timeout: 30.0
+total_time_limit: 300.0
+models_base_path: db-CBS/dynoplan/dynobench/models/
+motions_file: db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack
+seed: 6
+debug: false
+db_rrt: {motions_file: '', models_base_path: '', timelimit: 5.0, max_expands: 10000,
+  goal_region: 0.5, delta: 1.0, goal_bias: 0.2, max_motions: 1000, seed: -1, do_optimization: false,
+  use_nigh_nn: true, debug: false, solver_id: 0}
+composite_dbrrt:
+  time_limit: 30.0
+  delta: 0.3
+  goal_region: 0.5
+  max_motions: 1000
+  expansions_per_iter: 5
+  goal_threshold: 0.5
+  goal_bias: 0.1
+  require_all_move: false
+  models_base_path: db-CBS/dynoplan/dynobench/models/
+  seed: -1
+  debug: false
+  motion_files: {unicycle_first_order_0_sphere: db-CBS/dynoplan/dynomotions/unicycle1_v0__ispso__2023_04_03__14_56_57.bin.im.bin.im.bin.small5000.msgpack}
